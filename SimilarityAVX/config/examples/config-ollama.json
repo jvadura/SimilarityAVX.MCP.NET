@@ -1,0 +1,24 @@
+{
+  "embedding": {
+    "apiUrl": "http://10.0.0.186:11434",
+    "apiKey": "test-key",
+    "model": "hf.co/Qwen/Qwen3-Embedding-4B-GGUF:Q5_K_M",
+    "dimension": 2560,
+    "precision": "Float32",
+    "batchSize": 50,
+    "maxRetries": 3,
+    "retryDelayMs": 1000,
+    "queryInstruction": "Given a code search query, retrieve relevant code snippets that implement or relate to the query"
+  },
+  "parser": {
+    "includeFilePath": false,
+    "includeProjectContext": false
+  },
+  "performance": {
+    "enableAvx512": "Auto",
+    "maxDegreeOfParallelism": 16
+  },
+  "api": {
+    "enableMcp": false
+  }
+}

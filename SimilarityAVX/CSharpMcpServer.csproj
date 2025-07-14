@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>csharp-mcp-server</AssemblyName>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="test-auth-project\**" />
+    <EmbeddedResource Remove="test-auth-project\**" />
+    <None Remove="test-auth-project\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Core dependencies -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.7" />
+    <PackageReference Include="Dapper" Version="2.1.66" />
+    
+    <!-- For C language parsing -->
+    <PackageReference Include="CppAst" Version="0.23.1" />
+    
+    <!-- For Half/Float16 support and SIMD operations -->
+    <PackageReference Include="System.Numerics.Tensors" Version="9.0.7" />
+    
+    <!-- For cryptographic hashing -->
+    <PackageReference Include="System.Security.Cryptography.Algorithms" Version="4.3.1" />
+    
+    <!-- For Stage 2: MCP support -->
+    <PackageReference Include="ModelContextProtocol" Version="0.3.0-preview.2" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.3.0-preview.2" />
+  </ItemGroup>
+
+  <!-- Reference VoyageAI library -->
+  <ItemGroup>
+    <ProjectReference Include="..\VoyageAI\VoyageAI.csproj" />
+  </ItemGroup>
+
+  <!-- Copy config.json to output directory -->
+  <ItemGroup>
+    <None Update="config.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="config_snowflake.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+</Project>

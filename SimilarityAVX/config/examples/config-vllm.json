@@ -1,0 +1,25 @@
+{
+  "embedding": {
+    "provider": "OpenAI",
+    "apiUrl": "http://10.0.0.222:8001",
+    "apiKey": "test-key",
+    "model": "Qwen/Qwen3-Embedding-8B",
+    "dimension": 4096,
+    "precision": "Float32",
+    "batchSize": 64,
+    "maxRetries": 3,
+    "retryDelayMs": 1000,
+    "queryInstruction": "Given a code search query, retrieve relevant code snippets that implement or relate to the query"
+  },
+  "parser": {
+    "includeFilePath": false,
+    "includeProjectContext": false
+  },
+  "performance": {
+    "enableAvx512": "Auto",
+    "maxDegreeOfParallelism": 16
+  },
+  "api": {
+    "enableMcp": false
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "CSharpMcpServer": {
+      "commandName": "Project",
+      "commandLineArgs": ""
+    }
+  }
+}

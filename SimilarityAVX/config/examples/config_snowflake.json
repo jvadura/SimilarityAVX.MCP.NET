@@ -1,0 +1,28 @@
+{
+  "embedding": {
+    "provider": "OpenAI",
+    "apiUrl": "http://10.0.0.186:11434",
+    "apiKey": "test-key",
+    "model": "snowflake-arctic-embed2:latest",
+    "dimension": 1024,
+    "precision": "Float32",
+    "batchSize": 50,
+    "maxRetries": 3,
+    "retryDelayMs": 1000,
+  },
+  "parser": {
+    "includeFilePath": true,
+    "includeProjectContext": false,
+    "maxChunkSize": 2000,
+    "enableSlidingWindow": true
+  },
+  "performance": {
+    "enableAvx512": "Auto",
+    "memoryLimit": 1024
+  },
+  "api": {
+    "enableRestApi": false,
+    "restApiPort": 8080,
+    "enableMcp": true
+  }
+}
