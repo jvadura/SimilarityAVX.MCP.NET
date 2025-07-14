@@ -254,31 +254,9 @@ public static class MultiProjectCodeSearchTools
                     }
                 }
                 
-                // Truncate long paths for display
-                var displayPath = r.FilePath;
-                if (displayPath.Length > 80)
-                {
-                    var fileName = Path.GetFileName(displayPath);
-                    var dirName = Path.GetDirectoryName(displayPath) ?? "";
-                    var dirs = dirName.Split(Path.DirectorySeparatorChar);
-                    
-                    // Show first dir (usually drive) + last 2 dirs + filename
-                    if (dirs.Length > 3)
-                    {
-                        displayPath = $"{dirs[0]}{Path.DirectorySeparatorChar}...{Path.DirectorySeparatorChar}{string.Join(Path.DirectorySeparatorChar, dirs.TakeLast(2))}{Path.DirectorySeparatorChar}{fileName}";
-                    }
-                    else if (dirs.Length > 0)
-                    {
-                        // For shorter paths, just use ellipsis in the middle
-                        var firstDir = dirs[0];
-                        var lastDir = dirs[dirs.Length - 1];
-                        displayPath = $"{firstDir}{Path.DirectorySeparatorChar}...{Path.DirectorySeparatorChar}{lastDir}{Path.DirectorySeparatorChar}{fileName}";
-                    }
-                }
-                
                 return $"""
                     **Result {i + 1}: {Path.GetFileName(r.FilePath)}:{r.StartLine}-{r.EndLine}** (score: {r.Score:F2}, type: {r.ChunkType})
-                    File: {displayPath}
+                    File: {TruncatePath(r.FilePath)}
                     ```csharp
                     {contentWithLineNumbers}
                     ```
@@ -523,31 +501,9 @@ public static class MultiProjectCodeSearchTools
                     }
                 }
                 
-                // Truncate long paths for display
-                var displayPath = r.FilePath;
-                if (displayPath.Length > 80)
-                {
-                    var fileName = Path.GetFileName(displayPath);
-                    var dirName = Path.GetDirectoryName(displayPath) ?? "";
-                    var dirs = dirName.Split(Path.DirectorySeparatorChar);
-                    
-                    // Show first dir (usually drive) + last 2 dirs + filename
-                    if (dirs.Length > 3)
-                    {
-                        displayPath = $"{dirs[0]}{Path.DirectorySeparatorChar}...{Path.DirectorySeparatorChar}{string.Join(Path.DirectorySeparatorChar, dirs.TakeLast(2))}{Path.DirectorySeparatorChar}{fileName}";
-                    }
-                    else if (dirs.Length > 0)
-                    {
-                        // For shorter paths, just use ellipsis in the middle
-                        var firstDir = dirs[0];
-                        var lastDir = dirs[dirs.Length - 1];
-                        displayPath = $"{firstDir}{Path.DirectorySeparatorChar}...{Path.DirectorySeparatorChar}{lastDir}{Path.DirectorySeparatorChar}{fileName}";
-                    }
-                }
-                
                 return $"""
                     **Result {i + 1}: {Path.GetFileName(r.FilePath)}:{r.StartLine}-{r.EndLine}** (score: {r.Score:F2}, type: {r.ChunkType})
-                    File: {displayPath}
+                    File: {TruncatePath(r.FilePath)}
                     ```csharp
                     {contentWithLineNumbers}
                     ```
@@ -670,7 +626,7 @@ public static class MultiProjectCodeSearchTools
             
             sb.AppendLine($"## Result {i + 1}: {fileName}");
             sb.AppendLine();
-            sb.AppendLine($"**File:** `{r.FilePath}`  ");
+            sb.AppendLine($"**File:** `{TruncatePath(r.FilePath)}`  ");
             sb.AppendLine($"**Lines:** {r.StartLine}-{r.EndLine}  ");
             sb.AppendLine($"**Score:** {r.Score:F3}  ");
             sb.AppendLine($"**Type:** {r.ChunkType}  ");
@@ -945,6 +901,31 @@ public static class MultiProjectCodeSearchTools
         return "";
     }
     
+    private static string TruncatePath(string filePath, int maxLength = 80)
+    {
+        if (filePath.Length <= maxLength)
+            return filePath;
+            
+        var fileName = Path.GetFileName(filePath);
+        var dirName = Path.GetDirectoryName(filePath) ?? "";
+        var dirs = dirName.Split(Path.DirectorySeparatorChar);
+        
+        // Show first dir (usually drive) + last 2 dirs + filename
+        if (dirs.Length > 3)
+        {
+            return $"{dirs[0]}{Path.DirectorySeparatorChar}...{Path.DirectorySeparatorChar}{string.Join(Path.DirectorySeparatorChar, dirs.TakeLast(2))}{Path.DirectorySeparatorChar}{fileName}";
+        }
+        else if (dirs.Length > 0)
+        {
+            // For shorter paths, just use ellipsis in the middle
+            var firstDir = dirs[0];
+            var lastDir = dirs[dirs.Length - 1];
+            return $"{firstDir}{Path.DirectorySeparatorChar}...{Path.DirectorySeparatorChar}{lastDir}{Path.DirectorySeparatorChar}{fileName}";
+        }
+        
+        return filePath;
+    }
+    
     private static int GetOptimalContextLines(string chunkType)
     {
         var type = chunkType.ToLowerInvariant();
@@ -1024,7 +1005,7 @@ public static class MultiProjectCodeSearchTools
                 }
                 
                 sb.AppendLine($"### Result {i + 1}: {fileName}");
-                sb.AppendLine($"**File:** `{result.FilePath}`  ");
+                sb.AppendLine($"**File:** `{TruncatePath(result.FilePath)}`  ");
                 sb.AppendLine($"**Score:** {result.Score:F3}  ");
                 sb.AppendLine($"**Type:** {result.ChunkType}  ");
                 if (actualContextLines != contextLines)
@@ -1370,7 +1351,7 @@ public static class MultiProjectCodeSearchTools
                     {
                         var fileName = Path.GetFileName(result.FilePath);
                         sb.AppendLine($"- **{fileName}:{result.StartLine}** (score: {result.Score:F2}, type: {result.ChunkType})");
-                        sb.AppendLine($"  `{result.FilePath}`");
+                        sb.AppendLine($"  `{TruncatePath(result.FilePath)}` {GetTimeAgo(result.FilePath)}");
                         
                         // Show first line of content as preview
                         var firstLine = result.Content.Split('\n').FirstOrDefault()?.Trim() ?? "";

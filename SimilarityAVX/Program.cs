@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using CSharpMcpServer.Core;
@@ -184,7 +185,7 @@ async Task<int> RunConsoleMode(string[] args)
                     {
                         var result = results[i];
                         Console.WriteLine($"--- Result {i + 1} ---");
-                        Console.WriteLine($"File: {result.FilePath}:{result.StartLine}-{result.EndLine}");
+                        Console.WriteLine($"File: {TruncatePath(result.FilePath)}:{result.StartLine}-{result.EndLine}");
                         Console.WriteLine($"Score: {result.Score:F3}");
                         Console.WriteLine($"Type: {result.ChunkType}");
                         Console.WriteLine($"Content:\n{result.Content}");
@@ -285,6 +286,31 @@ async Task<int> RunConsoleMode(string[] args)
     }
 
     return 0;
+}
+
+string TruncatePath(string filePath, int maxLength = 80)
+{
+    if (filePath.Length <= maxLength)
+        return filePath;
+        
+    var fileName = Path.GetFileName(filePath);
+    var dirName = Path.GetDirectoryName(filePath) ?? "";
+    var dirs = dirName.Split(Path.DirectorySeparatorChar);
+    
+    // Show first dir (usually drive) + last 2 dirs + filename
+    if (dirs.Length > 3)
+    {
+        return $"{dirs[0]}{Path.DirectorySeparatorChar}...{Path.DirectorySeparatorChar}{string.Join(Path.DirectorySeparatorChar, dirs.TakeLast(2))}{Path.DirectorySeparatorChar}{fileName}";
+    }
+    else if (dirs.Length > 0)
+    {
+        // For shorter paths, just use ellipsis in the middle
+        var firstDir = dirs[0];
+        var lastDir = dirs[dirs.Length - 1];
+        return $"{firstDir}{Path.DirectorySeparatorChar}...{Path.DirectorySeparatorChar}{lastDir}{Path.DirectorySeparatorChar}{fileName}";
+    }
+    
+    return filePath;
 }
 
 void ShowUsage()
