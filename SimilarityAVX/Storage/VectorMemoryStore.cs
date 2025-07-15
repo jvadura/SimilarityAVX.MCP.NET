@@ -25,6 +25,14 @@ public class VectorMemoryStore
     protected Half[]? _allVectorsHalf;
     protected int _vectorCount;
     
+    // Incremental update support
+    protected int _vectorCapacity;  // Actual array size
+    protected readonly Dictionary<string, int> _idToIndex = new();  // Map ID to vector index
+    protected readonly Dictionary<int, int> _vectorIndexToEntryIndex = new();  // Map vector index to entry index
+    protected readonly HashSet<int> _deletedIndices = new();  // Track deleted slots
+    protected bool _needsCompaction = false;
+    protected const double CompactionThreshold = 0.25;  // Compact when 25% deleted
+    
     // CPU capabilities
     private readonly bool _supportsAvx512;
     private readonly bool _supportsAvx2;
@@ -84,7 +92,8 @@ public class VectorMemoryStore
         
         _entries.Add(entry);
         
-        // Mark for rebuild
+        // For AddEntry, we still mark for rebuild since it's used during initial load
+        // Incremental updates should use AppendVectors instead
         _allVectorsFloat32 = null;
         _allVectorsHalf = null;
     }
@@ -94,6 +103,12 @@ public class VectorMemoryStore
         _vectorCount = _entries.Count;
         if (_vectorCount == 0) return;
         
+        // Clear tracking structures for full rebuild
+        _idToIndex.Clear();
+        _vectorIndexToEntryIndex.Clear();
+        _deletedIndices.Clear();
+        _needsCompaction = false;
+        
         if (_precision == VectorPrecision.Half)
         {
             BuildHalfIndex();
@@ -102,6 +117,15 @@ public class VectorMemoryStore
         {
             BuildFloat32Index();
         }
+        
+        // Build ID to index mapping
+        for (int i = 0; i < _entries.Count; i++)
+        {
+            _idToIndex[_entries[i].Id] = i;
+            _vectorIndexToEntryIndex[i] = i;
+        }
+        
+        _vectorCapacity = _vectorCount;
         
         var stats = GetStats();
         Console.Error.WriteLine($"[VectorStore] Index built: {_vectorCount} vectors, {stats.VectorsMemoryMB:F1}MB vectors, {stats.MemoryUsageMB:F1}MB total");
@@ -168,6 +192,12 @@ public class VectorMemoryStore
     {
         if (_vectorCount == 0) 
             return Array.Empty<SearchResult>();
+            
+        // Compact if needed before search
+        if (_needsCompaction && _deletedIndices.Count > _vectorCapacity * CompactionThreshold)
+        {
+            CompactVectors();
+        }
         
         var scores = new float[_vectorCount];
         
@@ -190,6 +220,13 @@ public class VectorMemoryStore
         // Use TensorPrimitives for Float32 - now with AVX-512 support in .NET 9
         Parallel.For(0, _vectorCount, new ParallelOptions { MaxDegreeOfParallelism = _maxDegreeOfParallelism }, vectorIndex =>
         {
+            // Skip deleted entries
+            if (_deletedIndices.Contains(vectorIndex))
+            {
+                scores[vectorIndex] = float.MinValue;
+                return;
+            }
+            
             var offset = vectorIndex * _dimension;
             var vectorSpan = new ReadOnlySpan<float>(_allVectorsFloat32, offset, _dimension);
             
@@ -210,6 +247,13 @@ public class VectorMemoryStore
         // Use TensorPrimitives for hardware-accelerated operations
         Parallel.For(0, _vectorCount, new ParallelOptions { MaxDegreeOfParallelism = _maxDegreeOfParallelism }, vectorIndex =>
         {
+            // Skip deleted entries
+            if (_deletedIndices.Contains(vectorIndex))
+            {
+                scores[vectorIndex] = float.MinValue;
+                return;
+            }
+            
             var offset = vectorIndex * _dimension;
             var vectorSpan = new ReadOnlySpan<Half>(_allVectorsHalf, offset, _dimension);
             
@@ -471,9 +515,17 @@ public class VectorMemoryStore
     {
         // Pre-calculate combined scores
         var combinedScores = new float[_vectorCount];
+        
         for (int i = 0; i < _vectorCount; i++)
         {
-            var entry = _entries[i];
+            // Skip deleted entries
+            if (_deletedIndices.Contains(i) || !_vectorIndexToEntryIndex.TryGetValue(i, out var entryIdx))
+            {
+                combinedScores[i] = float.MinValue;
+                continue;
+            }
+            
+            var entry = _entries[entryIdx];
             var semanticScore = scores[i];
             
             // Calculate recency score (files modified within last 7 days get boost)
@@ -518,15 +570,19 @@ public class VectorMemoryStore
         var results = new SearchResult[topIndices.Length];
         for (int i = 0; i < topIndices.Length; i++)
         {
-            var idx = topIndices[i];
-            results[i] = new SearchResult(
-                _entries[idx].FilePath,
-                _entries[idx].StartLine,
-                _entries[idx].EndLine,
-                _entries[idx].Content,
-                scores[idx], // Return original semantic score for transparency
-                _entries[idx].ChunkType
-            );
+            var vectorIdx = topIndices[i];
+            if (_vectorIndexToEntryIndex.TryGetValue(vectorIdx, out var entryIdx))
+            {
+                var entry = _entries[entryIdx];
+                results[i] = new SearchResult(
+                    entry.FilePath,
+                    entry.StartLine,
+                    entry.EndLine,
+                    entry.Content,
+                    scores[vectorIdx], // Return original semantic score for transparency
+                    entry.ChunkType
+                );
+            }
         }
         
         return results;
@@ -534,12 +590,16 @@ public class VectorMemoryStore
     
     private SearchResult[] GetTopResultsSimple(float[] scores, int topK)
     {
-        var results = new List<(int index, float score, float combinedScore)>(_vectorCount);
+        var results = new List<(int vectorIndex, int entryIndex, float score, float combinedScore)>();
         
         // Calculate combined scores with semantic similarity, file importance, and recency
         for (int i = 0; i < _vectorCount; i++)
         {
-            var entry = _entries[i];
+            // Skip deleted entries
+            if (_deletedIndices.Contains(i) || !_vectorIndexToEntryIndex.TryGetValue(i, out var entryIdx)) 
+                continue;
+            
+            var entry = _entries[entryIdx];
             var semanticScore = scores[i];
             
             // Calculate recency score (files modified within last 7 days get boost)
@@ -556,20 +616,24 @@ public class VectorMemoryStore
                                (semanticScore * fileImportance * 0.2f) + 
                                (semanticScore * recencyScore * 0.1f);
             
-            results.Add((i, semanticScore, combinedScore));
+            results.Add((i, entryIdx, semanticScore, combinedScore));
         }
         
         return results
             .OrderByDescending(x => x.combinedScore)
             .Take(Math.Min(topK, _vectorCount))
-            .Select(x => new SearchResult(
-                _entries[x.index].FilePath,
-                _entries[x.index].StartLine,
-                _entries[x.index].EndLine,
-                _entries[x.index].Content,
-                x.score, // Return original semantic score for transparency
-                _entries[x.index].ChunkType
-            ))
+            .Select(x => 
+            {
+                var entry = _entries[x.entryIndex];
+                return new SearchResult(
+                    entry.FilePath,
+                    entry.StartLine,
+                    entry.EndLine,
+                    entry.Content,
+                    x.score, // Return original semantic score for transparency
+                    entry.ChunkType
+                );
+            })
             .ToArray();
     }
     
@@ -681,13 +745,46 @@ public class VectorMemoryStore
         var entriesToAdd = newEntries.ToList();
         if (!entriesToAdd.Any()) return;
         
-        // Add new entries
-        _entries.AddRange(entriesToAdd);
+        // Check if we need initial build
+        if (_allVectorsFloat32 == null && _allVectorsHalf == null)
+        {
+            _entries.AddRange(entriesToAdd);
+            BuildIndex();
+            Console.Error.WriteLine($"[VectorStore] Initial build with {entriesToAdd.Count} vectors");
+            return;
+        }
         
-        // Rebuild index with new vectors
-        BuildIndex();
+        // Ensure we have enough capacity
+        int newCount = _vectorCount + entriesToAdd.Count;
+        EnsureCapacity(newCount);
         
-        Console.Error.WriteLine($"[VectorStore] Appended {entriesToAdd.Count} vectors, total now: {_entries.Count}");
+        // Append vectors incrementally
+        int appendIndex = _vectorCount;
+        int entryIndex = _entries.Count;
+        
+        foreach (var entry in entriesToAdd)
+        {
+            _entries.Add(entry);
+            _idToIndex[entry.Id] = appendIndex;
+            _vectorIndexToEntryIndex[appendIndex] = entryIndex;
+            
+            // Copy vector data to the arrays
+            if (_precision == VectorPrecision.Half)
+            {
+                CopyVectorToHalfArray(entry, appendIndex);
+            }
+            else
+            {
+                CopyVectorToFloat32Array(entry, appendIndex);
+            }
+            
+            appendIndex++;
+            entryIndex++;
+        }
+        
+        _vectorCount = newCount;
+        
+        Console.Error.WriteLine($"[VectorStore] Incrementally appended {entriesToAdd.Count} vectors, total now: {_vectorCount}");
     }
     
     public void RemoveVectors(IEnumerable<string> idsToRemove)
@@ -736,15 +833,33 @@ public class VectorMemoryStore
     
     public void RemoveVectorsByPath(string filePath)
     {
-        var countBefore = _entries.Count;
-        _entries.RemoveAll(e => e.FilePath == filePath);
-        var removed = countBefore - _entries.Count;
+        var toRemove = _entries.Where(e => e.FilePath == filePath).Select(e => e.Id).ToList();
+        if (!toRemove.Any()) return;
         
-        if (removed > 0)
+        // Mark indices as deleted instead of rebuilding
+        foreach (var id in toRemove)
         {
-            // Rebuild index after removal
-            BuildIndex();
-            Console.Error.WriteLine($"[VectorStore] Removed {removed} vectors from {filePath}");
+            if (_idToIndex.TryGetValue(id, out var index))
+            {
+                _deletedIndices.Add(index);
+                _idToIndex.Remove(id);
+                _vectorIndexToEntryIndex.Remove(index);
+            }
+        }
+        
+        // Remove from entries list
+        _entries.RemoveAll(e => e.FilePath == filePath);
+        
+        // Check if we should compact
+        double deletedRatio = (double)_deletedIndices.Count / _vectorCapacity;
+        if (deletedRatio > CompactionThreshold)
+        {
+            CompactVectors();
+        }
+        else
+        {
+            _needsCompaction = true;
+            Console.Error.WriteLine($"[VectorStore] Marked {toRemove.Count} vectors as deleted from {filePath} (deferred compaction)");
         }
     }
     
@@ -792,6 +907,145 @@ public class VectorMemoryStore
     }
     
     public IEnumerable<VectorEntry> GetAllEntries() => _entries;
+    
+    // Helper methods for incremental updates
+    private void EnsureCapacity(int requiredCapacity)
+    {
+        if (_vectorCapacity >= requiredCapacity) return;
+        
+        // Grow by 50% or to required capacity, whichever is larger
+        int newCapacity = Math.Max(requiredCapacity, _vectorCapacity + _vectorCapacity / 2);
+        
+        if (_precision == VectorPrecision.Half)
+        {
+            var newArray = new Half[newCapacity * _dimension];
+            if (_allVectorsHalf != null)
+            {
+                Array.Copy(_allVectorsHalf, newArray, _vectorCount * _dimension);
+            }
+            _allVectorsHalf = newArray;
+        }
+        else
+        {
+            var newArray = new float[newCapacity * _dimension];
+            if (_allVectorsFloat32 != null)
+            {
+                Array.Copy(_allVectorsFloat32, newArray, _vectorCount * _dimension);
+            }
+            _allVectorsFloat32 = newArray;
+        }
+        
+        _vectorCapacity = newCapacity;
+        Console.Error.WriteLine($"[VectorStore] Expanded capacity to {newCapacity} vectors");
+    }
+    
+    private void CopyVectorToFloat32Array(VectorEntry entry, int index)
+    {
+        var offset = index * _dimension;
+        
+        if (entry.SourcePrecision == VectorPrecision.Float32)
+        {
+            // Direct copy from float32
+            Buffer.BlockCopy(entry.EmbeddingBytes, 0, _allVectorsFloat32!, offset * sizeof(float), entry.EmbeddingBytes.Length);
+        }
+        else
+        {
+            // Convert from Half to float32
+            var halfSpan = MemoryMarshal.Cast<byte, Half>(entry.EmbeddingBytes);
+            for (int j = 0; j < _dimension; j++)
+            {
+                _allVectorsFloat32![offset + j] = (float)halfSpan[j];
+            }
+        }
+    }
+    
+    private void CopyVectorToHalfArray(VectorEntry entry, int index)
+    {
+        var offset = index * _dimension;
+        
+        if (entry.SourcePrecision == VectorPrecision.Half)
+        {
+            // Direct copy from Half bytes
+            var halfSpan = MemoryMarshal.Cast<byte, Half>(entry.EmbeddingBytes);
+            halfSpan.CopyTo(_allVectorsHalf.AsSpan(offset, _dimension));
+        }
+        else
+        {
+            // Convert from float32 to Half
+            var floatSpan = MemoryMarshal.Cast<byte, float>(entry.EmbeddingBytes);
+            for (int j = 0; j < _dimension; j++)
+            {
+                _allVectorsHalf![offset + j] = (Half)floatSpan[j];
+            }
+        }
+    }
+    
+    private void CompactVectors()
+    {
+        if (!_deletedIndices.Any())
+        {
+            _needsCompaction = false;
+            return;
+        }
+        
+        Console.Error.WriteLine($"[VectorStore] Compacting vectors ({_deletedIndices.Count} deleted out of {_vectorCapacity})...");
+        
+        // Create new compacted arrays
+        int newCount = _entries.Count;
+        int newCapacity = Math.Max(newCount, newCount + newCount / 4); // 25% growth buffer
+        
+        if (_precision == VectorPrecision.Half)
+        {
+            var newArray = new Half[newCapacity * _dimension];
+            int writeIndex = 0;
+            
+            // Copy non-deleted vectors
+            for (int i = 0; i < _vectorCount; i++)
+            {
+                if (!_deletedIndices.Contains(i))
+                {
+                    Array.Copy(_allVectorsHalf!, i * _dimension, newArray, writeIndex * _dimension, _dimension);
+                    writeIndex++;
+                }
+            }
+            
+            _allVectorsHalf = newArray;
+        }
+        else
+        {
+            var newArray = new float[newCapacity * _dimension];
+            int writeIndex = 0;
+            
+            // Copy non-deleted vectors
+            for (int i = 0; i < _vectorCount; i++)
+            {
+                if (!_deletedIndices.Contains(i))
+                {
+                    Array.Copy(_allVectorsFloat32!, i * _dimension, newArray, writeIndex * _dimension, _dimension);
+                    writeIndex++;
+                }
+            }
+            
+            _allVectorsFloat32 = newArray;
+        }
+        
+        // Rebuild ID to index mapping
+        _idToIndex.Clear();
+        _vectorIndexToEntryIndex.Clear();
+        for (int i = 0; i < _entries.Count; i++)
+        {
+            _idToIndex[_entries[i].Id] = i;
+            _vectorIndexToEntryIndex[i] = i;
+        }
+        
+        _vectorCount = newCount;
+        _vectorCapacity = newCapacity;
+        _deletedIndices.Clear();
+        _needsCompaction = false;
+        
+        var stats = GetStats();
+        Console.Error.WriteLine($"[VectorStore] Compaction complete: {_vectorCount} vectors, {stats.VectorsMemoryMB:F1}MB vectors");
+    }
 }
 
 public class VectorEntry

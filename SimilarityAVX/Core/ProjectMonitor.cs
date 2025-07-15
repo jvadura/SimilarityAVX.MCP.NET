@@ -19,6 +19,9 @@ public class ProjectMonitor : IDisposable
     private readonly Configuration _configuration;
     private readonly ConcurrentDictionary<string, ProjectWatcher> _watchers = new();
     private readonly ConcurrentDictionary<string, DateTime> _pendingReindexes = new();
+    private readonly ConcurrentDictionary<string, HashSet<string>> _pendingFileChanges = new(); // Track files changed per project
+    private readonly ConcurrentDictionary<string, string> _projectDirectories = new(); // Track project -> directory mapping
+    private readonly ConcurrentDictionary<string, HashSet<string>> _directoryProjects = new(); // Track directory -> projects mapping
     private readonly Timer _reindexTimer;
     private readonly TimeSpan _debounceDelay;
     private readonly object _reindexLock = new();
@@ -57,6 +60,7 @@ public class ProjectMonitor : IDisposable
         }
 
         var verificationTasks = new List<Task>();
+        var duplicateProjects = new Dictionary<string, List<string>>(); // directory -> list of projects
 
         foreach (var dbFile in dbFiles)
         {
@@ -67,6 +71,15 @@ public class ProjectMonitor : IDisposable
         }
 
         await Task.WhenAll(verificationTasks);
+        
+        // Check for duplicate projects pointing to same directory
+        foreach (var kvp in _directoryProjects)
+        {
+            if (kvp.Value.Count > 1)
+            {
+                Console.Error.WriteLine($"[ProjectMonitor] WARNING: Multiple projects point to same directory {kvp.Key}: {string.Join(", ", kvp.Value)}");
+            }
+        }
         
         Console.Error.WriteLine($"[ProjectMonitor] Verification complete. {_watchers.Count} projects being monitored.");
     }
@@ -102,20 +115,47 @@ public class ProjectMonitor : IDisposable
                 return;
             }
 
-            // Check for changes using FileSynchronizer
-            var synchronizer = new FileSynchronizer();
-            var changes = synchronizer.GetChanges(projectDir);
+            // Track project directory mapping
+            _projectDirectories[projectName] = projectDir;
+            _directoryProjects.AddOrUpdate(projectDir, 
+                new HashSet<string> { projectName },
+                (key, existing) => { existing.Add(projectName); return existing; });
             
-            if (changes.HasChanges)
+            // Skip verification if another project already verified this directory
+            if (_directoryProjects[projectDir].Count > 1)
             {
-                Console.Error.WriteLine($"[ProjectMonitor] Project '{projectName}' has {changes.Added.Count} added, {changes.Modified.Count} modified, {changes.Removed.Count} removed files.");
-                
-                // Schedule immediate reindex
-                _pendingReindexes[projectName] = DateTime.UtcNow;
+                Console.Error.WriteLine($"[ProjectMonitor] Project '{projectName}' shares directory with another project, skipping verification.");
             }
             else
             {
-                Console.Error.WriteLine($"[ProjectMonitor] Project '{projectName}' is up to date.");
+                // Check for changes using FileSynchronizer with project-specific state
+                var synchronizer = new FileSynchronizer();
+                var changes = synchronizer.GetChanges(projectDir, projectName); // Pass project name for unique state
+                
+                if (changes.HasChanges)
+                {
+                    Console.Error.WriteLine($"[ProjectMonitor] Project '{projectName}' has {changes.Added.Count} added, {changes.Modified.Count} modified, {changes.Removed.Count} removed files.");
+                    
+                    // Schedule immediate reindex for all projects in this directory
+                    foreach (var proj in _directoryProjects[projectDir])
+                    {
+                        _pendingReindexes[proj] = DateTime.UtcNow;
+                        
+                        // Track specific files that changed for incremental processing
+                        var fileSet = _pendingFileChanges.GetOrAdd(proj, _ => new HashSet<string>());
+                        lock (fileSet)
+                        {
+                            foreach (var file in changes.Added.Concat(changes.Modified).Concat(changes.Removed))
+                            {
+                                fileSet.Add(file);
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    Console.Error.WriteLine($"[ProjectMonitor] Project '{projectName}' is up to date.");
+                }
             }
 
             // Set up file system monitoring if enabled
@@ -142,6 +182,14 @@ public class ProjectMonitor : IDisposable
         if (_watchers.ContainsKey(projectName))
         {
             Console.Error.WriteLine($"[ProjectMonitor] Already monitoring project '{projectName}'");
+            return;
+        }
+        
+        // Check if we're already monitoring this directory with another project
+        var existingWatcher = _watchers.Values.FirstOrDefault(w => w.Directory.Equals(projectDir, StringComparison.OrdinalIgnoreCase));
+        if (existingWatcher != null)
+        {
+            Console.Error.WriteLine($"[ProjectMonitor] Directory already monitored by another project, skipping FileSystemWatcher for '{projectName}'");
             return;
         }
 
@@ -173,9 +221,28 @@ public class ProjectMonitor : IDisposable
 
         lock (_reindexLock)
         {
-            // Update or add pending reindex with current time
-            _pendingReindexes[projectName] = DateTime.UtcNow;
-            Console.Error.WriteLine($"[ProjectMonitor] File change detected in '{projectName}': {changeType} - {filePath}");
+            // Get the directory for this project
+            if (_projectDirectories.TryGetValue(projectName, out var projectDir))
+            {
+                // Schedule reindex for all projects sharing this directory
+                if (_directoryProjects.TryGetValue(projectDir, out var projects))
+                {
+                    foreach (var proj in projects)
+                    {
+                        // Reset the debounce timer by updating to current time
+                        _pendingReindexes[proj] = DateTime.UtcNow;
+                        
+                        // Track the specific file that changed
+                        var fileSet = _pendingFileChanges.GetOrAdd(proj, _ => new HashSet<string>());
+                        lock (fileSet)
+                        {
+                            fileSet.Add(filePath);
+                        }
+                        
+                        Console.Error.WriteLine($"[ProjectMonitor] File change detected in '{proj}': {changeType} - {filePath}");
+                    }
+                }
+            }
         }
     }
 
@@ -230,19 +297,30 @@ public class ProjectMonitor : IDisposable
                 return;
             }
 
-            // Verify changes with SHA256
+            // Get pending file changes for incremental scan
+            HashSet<string>? changedFiles = null;
+            if (_pendingFileChanges.TryRemove(projectName, out var fileSet))
+            {
+                changedFiles = fileSet;
+                Console.Error.WriteLine($"[ProjectMonitor] Processing {changedFiles.Count} specific file changes for '{projectName}'");
+            }
+            
+            // Verify changes with SHA256 using project-specific state
             var synchronizer = new FileSynchronizer();
-            var changes = synchronizer.GetChanges(projectDir);
+            var changes = synchronizer.GetChanges(projectDir, projectName, changedFiles);
             
             if (!changes.HasChanges)
             {
                 Console.Error.WriteLine($"[ProjectMonitor] No actual changes detected for '{projectName}' after SHA256 verification");
                 return;
             }
+            
+            // Save the state immediately so CodeIndexer has updated state
+            synchronizer.SaveState(projectDir, projectName);
 
             // Create indexer and perform incremental update
-            var indexer = new CodeIndexer(_configuration, projectName);
-            var stats = await indexer.IndexDirectoryAsync(projectDir, false);
+            using var indexer = new CodeIndexer(_configuration, projectName);
+            var stats = await indexer.IndexDirectoryAsync(projectDir, false, null, changes);
             
             Console.Error.WriteLine($"[ProjectMonitor] Automatic reindex complete for '{projectName}': " +
                                   $"{stats.FilesProcessed} files, {stats.ChunksCreated} chunks in {stats.Duration.TotalSeconds:F1}s");
@@ -323,11 +401,14 @@ public class ProjectMonitor : IDisposable
         private readonly string _projectName;
         private readonly FileSystemWatcher _watcher;
         private readonly Action<string, string, WatcherChangeTypes> _onChanged;
+        
+        public string Directory { get; }
 
         public ProjectWatcher(string projectName, string directory, Action<string, string, WatcherChangeTypes> onChanged)
         {
             _projectName = projectName;
             _onChanged = onChanged;
+            Directory = directory;
             
             _watcher = new FileSystemWatcher(directory)
             {

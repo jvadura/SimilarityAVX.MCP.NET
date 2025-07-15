@@ -61,7 +61,8 @@ public class CodeIndexer : IDisposable
     public async Task<IndexStats> IndexDirectoryAsync(
         string directory, 
         bool forceReindex = false,
-        IProgress<IndexProgress>? progress = null)
+        IProgress<IndexProgress>? progress = null,
+        FileChanges? precomputedChanges = null)
     {
         var stopwatch = Stopwatch.StartNew();
         
@@ -84,9 +85,23 @@ public class CodeIndexer : IDisposable
         }
         
         // Get file changes
-        var changes = forceReindex 
-            ? GetAllCsFiles(directory) 
-            : _synchronizer.GetChanges(directory);
+        FileChanges changes;
+        
+        if (forceReindex)
+        {
+            changes = GetAllCsFiles(directory);
+        }
+        else if (precomputedChanges != null)
+        {
+            // Use the changes already computed by ProjectMonitor
+            changes = precomputedChanges;
+            Console.Error.WriteLine($"[CodeIndexer] Using precomputed changes: +{changes.Added.Count} ~{changes.Modified.Count} -{changes.Removed.Count}");
+        }
+        else
+        {
+            // Fall back to computing changes ourselves
+            changes = _synchronizer.GetChanges(directory, _projectName);
+        }
         
         if (!changes.HasChanges && !forceReindex)
         {
@@ -255,7 +270,7 @@ public class CodeIndexer : IDisposable
         }
         
         // Update synchronizer state
-        _synchronizer.SaveState(directory);
+        _synchronizer.SaveState(directory, _projectName);
         
         var duration = stopwatch.Elapsed;
         var stats = new IndexStats(processedFiles, totalChunks, skippedFiles, duration, changes);

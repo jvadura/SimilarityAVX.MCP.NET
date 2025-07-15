@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -13,6 +14,9 @@ public class FileSynchronizer
 {
     private readonly string _stateDirectory;
     private readonly int _maxDegreeOfParallelism;
+    
+    // In-memory cache for file hashes - project -> (filepath -> hash)
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _memoryCache = new();
     
     private static readonly string[] IgnorePatterns = 
     {
@@ -33,17 +37,51 @@ public class FileSynchronizer
         Directory.CreateDirectory(_stateDirectory);
     }
     
-    public FileChanges GetChanges(string directory)
+    public FileChanges GetChanges(string directory, string? projectName = null, HashSet<string>? changedFiles = null)
     {
-        var stateFile = GetStateFile(directory);
-        var currentFiles = GetFileHashes(directory);
-        var previousFiles = LoadState(stateFile);
+        var cacheKey = projectName ?? directory;
         
-        var added = currentFiles.Keys.Except(previousFiles.Keys).ToList();
-        var removed = previousFiles.Keys.Except(currentFiles.Keys).ToList();
+        // Get or create memory cache for this project
+        var cache = _memoryCache.GetOrAdd(cacheKey, _ => new ConcurrentDictionary<string, string>());
+        
+        // Load previous state if cache is empty
+        if (cache.IsEmpty)
+        {
+            var stateFile = GetStateFile(directory, projectName);
+            var savedState = LoadState(stateFile);
+            foreach (var kvp in savedState)
+            {
+                cache.TryAdd(kvp.Key, kvp.Value);
+            }
+            Console.Error.WriteLine($"[FileSynchronizer] Loaded {cache.Count} file hashes into memory cache");
+        }
+        
+        Dictionary<string, string> currentFiles;
+        
+        if (changedFiles != null && changedFiles.Count > 0)
+        {
+            // Incremental scan - only check the specific files that changed
+            Console.Error.WriteLine($"[FileSynchronizer] Incremental scan of {changedFiles.Count} changed files...");
+            currentFiles = GetFileHashesIncremental(directory, changedFiles, cache);
+        }
+        else
+        {
+            // Full scan - check all files
+            currentFiles = GetFileHashes(directory);
+            
+            // Update cache with current state
+            foreach (var kvp in currentFiles)
+            {
+                cache.AddOrUpdate(kvp.Key, kvp.Value, (k, v) => kvp.Value);
+            }
+        }
+        
+        // Compare against cache
+        var added = currentFiles.Keys.Except(cache.Keys).ToList();
+        var removed = cache.Keys.Except(currentFiles.Keys).ToList();
         var modified = currentFiles
-            .Where(kvp => previousFiles.ContainsKey(kvp.Key) && 
-                          previousFiles[kvp.Key] != kvp.Value)
+            .Where(kvp => cache.ContainsKey(kvp.Key) && 
+                          cache[kvp.Key] != kvp.Value)
             .Select(kvp => kvp.Key)
             .ToList();
         
@@ -52,23 +90,43 @@ public class FileSynchronizer
         if (changes.HasChanges)
         {
             Console.Error.WriteLine($"[FileSynchronizer] Changes detected: +{added.Count} ~{modified.Count} -{removed.Count}");
+            
+            // Update cache immediately
+            foreach (var file in removed)
+            {
+                cache.TryRemove(file, out _);
+            }
+            foreach (var kvp in currentFiles.Where(kvp => added.Contains(kvp.Key) || modified.Contains(kvp.Key)))
+            {
+                cache.AddOrUpdate(kvp.Key, kvp.Value, (k, v) => kvp.Value);
+            }
         }
         
         return changes;
     }
     
-    public void SaveState(string directory)
+    public void SaveState(string directory, string? projectName = null)
     {
-        var stateFile = GetStateFile(directory);
-        var currentFiles = GetFileHashes(directory);
+        var cacheKey = projectName ?? directory;
         
-        var json = JsonSerializer.Serialize(currentFiles, new JsonSerializerOptions 
+        // Get cache for this project
+        if (!_memoryCache.TryGetValue(cacheKey, out var cache))
+        {
+            Console.Error.WriteLine($"[FileSynchronizer] Warning: No cache found for {cacheKey}, performing full scan");
+            cache = new ConcurrentDictionary<string, string>(GetFileHashes(directory));
+        }
+        
+        // Save cache to disk
+        var stateFile = GetStateFile(directory, projectName);
+        var stateDict = cache.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+        
+        var json = JsonSerializer.Serialize(stateDict, new JsonSerializerOptions 
         { 
             WriteIndented = true 
         });
         
         File.WriteAllText(stateFile, json);
-        Console.Error.WriteLine($"[FileSynchronizer] State saved for {currentFiles.Count} files");
+        Console.Error.WriteLine($"[FileSynchronizer] State saved for {cache.Count} files (from memory cache)");
     }
     
     public void ClearState()
@@ -144,17 +202,20 @@ public class FileSynchronizer
         }
     }
     
-    private string GetStateFile(string directory)
+    private string GetStateFile(string directory, string? projectName = null)
     {
-        // Create a unique filename based on directory path
+        // Create a unique filename based on directory path and optional project name
+        var identifier = projectName != null ? $"{directory}|{projectName}" : directory;
+        
         using var sha = SHA256.Create();
-        var hashBytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(directory.ToLowerInvariant()));
+        var hashBytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(identifier.ToLowerInvariant()));
         var hash = Convert.ToBase64String(hashBytes)
             .Replace('/', '_')
             .Replace('+', '-')
             .Replace('=', '_');
         
-        return Path.Combine(_stateDirectory, $"state_{hash}.json");
+        var prefix = projectName != null ? $"state_{projectName}_" : "state_";
+        return Path.Combine(_stateDirectory, $"{prefix}{hash}.json");
     }
     
     private bool ShouldIgnore(string filePath, string baseDirectory)
@@ -200,5 +261,75 @@ public class FileSynchronizer
         catch { }
         
         return false;
+    }
+    
+    private Dictionary<string, string> GetFileHashesIncremental(string directory, HashSet<string> filesToCheck, ConcurrentDictionary<string, string> cache)
+    {
+        var result = new Dictionary<string, string>();
+        
+        // First, copy all NON-CHANGED files from cache
+        foreach (var kvp in cache)
+        {
+            // Only copy if it's not in the changed files list
+            if (!filesToCheck.Contains(kvp.Key) && File.Exists(kvp.Key))
+            {
+                result[kvp.Key] = kvp.Value;
+            }
+        }
+        
+        // Then compute hashes for the changed files
+        var relevantFiles = filesToCheck
+            .Where(f => !ShouldIgnore(f, directory))
+            .Where(f => 
+            {
+                var ext = Path.GetExtension(f).ToLowerInvariant();
+                return ext == ".cs" || ext == ".razor" || ext == ".cshtml" || ext == ".c" || ext == ".h";
+            })
+            .ToList();
+        
+        Console.Error.WriteLine($"[FileSynchronizer] Computing hashes for {relevantFiles.Count} changed files");
+        
+        Parallel.ForEach(relevantFiles, new ParallelOptions { MaxDegreeOfParallelism = _maxDegreeOfParallelism }, file =>
+        {
+            try
+            {
+                if (File.Exists(file))
+                {
+                    using var sha = SHA256.Create();
+                    using var stream = File.OpenRead(file);
+                    var hash = Convert.ToBase64String(sha.ComputeHash(stream));
+                    
+                    lock (result)
+                    {
+                        result[file] = hash;
+                    }
+                }
+                else
+                {
+                    // File was deleted - don't add to result
+                    Console.Error.WriteLine($"[FileSynchronizer] File deleted: {file}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[FileSynchronizer] Warning: Could not hash {file}: {ex.Message}");
+            }
+        });
+        
+        return result;
+    }
+    
+    public void ClearCache(string? projectName = null)
+    {
+        if (projectName != null)
+        {
+            _memoryCache.TryRemove(projectName, out _);
+            Console.Error.WriteLine($"[FileSynchronizer] Cleared memory cache for project '{projectName}'");
+        }
+        else
+        {
+            _memoryCache.Clear();
+            Console.Error.WriteLine("[FileSynchronizer] Cleared all memory caches");
+        }
     }
 }
