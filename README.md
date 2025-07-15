@@ -8,9 +8,17 @@
 
 🎯 **Search code by meaning, not text** - Find implementations using natural language descriptions instead of exact string matching.
 
+## 🪟 Windows Host Deployment Recommended
+
+**Important**: This tool should run on your Windows host machine, not in WSL. Claude Code instances running in WSL can connect to the Windows-hosted server.
+
+Why? File monitoring (FileSystemWatcher) doesn't work reliably in WSL when watching Windows filesystems. Running on Windows ensures real-time index updates work correctly.
+
+> **WSL Users**: If you must run in WSL, disable file monitoring (`"enableFileWatching": false`) and rely on startup verification. Periodic rescan is planned as a future feature.
+
 ## Why Choose This?
 
-Super simple setup - just select your embedding provider and run! It's designed to work seamlessly with Claude Code, optimized for running on the same PC as your WSL instances.
+Super simple setup - just select your embedding provider and run! The server runs as a background service on Windows, accessible from any Claude Code instance.
 
 | Feature | Semantic Search | Traditional grep |
 |---------|----------------|------------------|
