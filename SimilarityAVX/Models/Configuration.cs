@@ -211,6 +211,12 @@ public class MonitoringConfig
     
     [JsonPropertyName("enableFileWatching")]
     public bool EnableFileWatching { get; set; } = true;
+    
+    [JsonPropertyName("enablePeriodicRescan")]
+    public bool EnablePeriodicRescan { get; set; } = false;
+    
+    [JsonPropertyName("periodicRescanMinutes")]
+    public int PeriodicRescanMinutes { get; set; } = 30;
 }
 
 public class DebugConfig

@@ -2,7 +2,9 @@
 
 This guide helps you choose between MCP semantic search and traditional search tools (grep/glob) based on extensive real-world testing with enterprise codebases.
 
-> **New Feature**: The MCP server now includes [automatic monitoring and reindexing](AUTOMATIC-MONITORING.md) to keep your search index synchronized with code changes in real-time!
+> **New Features**: 
+> - **Automatic monitoring and reindexing** to keep your search index synchronized with code changes in real-time (Windows)
+> - **Periodic rescan** option for WSL users - automatically checks for changes every X minutes when file monitoring isn't available
 
 ## Quick Decision Matrix
 

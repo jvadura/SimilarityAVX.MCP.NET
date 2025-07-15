@@ -14,7 +14,7 @@
 
 Why? File monitoring (FileSystemWatcher) doesn't work reliably in WSL when watching Windows filesystems. Running on Windows ensures real-time index updates work correctly.
 
-> **WSL Users**: If you must run in WSL, disable file monitoring (`"enableFileWatching": false`) and rely on startup verification. Periodic rescan is planned as a future feature.
+> **WSL Users**: If you must run in WSL, disable file monitoring (`"enableFileWatching": false`) and enable periodic rescan (`"enablePeriodicRescan": true`) to check for changes every 30 minutes.
 
 ## Why Choose This?
 
@@ -92,7 +92,9 @@ dotnet build -c Release
     "enableAutoReindex": true,          // Auto-sync with code changes
     "verifyOnStartup": true,            // Check for changes on startup
     "debounceDelaySeconds": 60,         // Wait after last file change
-    "enableFileWatching": true          // Real-time monitoring
+    "enableFileWatching": true,         // Real-time monitoring (Windows only)
+    "enablePeriodicRescan": false,      // Enable for WSL users
+    "periodicRescanMinutes": 30         // How often to check for changes
   }
 }
 ```
@@ -192,7 +194,8 @@ The server includes built-in security features:
 
 The server automatically keeps your search index synchronized:
 - **Startup verification** - Checks all projects for changes when the server starts
-- **Real-time monitoring** - Watches for code changes and reindexes automatically
+- **Real-time monitoring** - Watches for code changes and reindexes automatically (Windows only)
+- **Periodic rescan** - Optional scheduled rescan for WSL users (every 30 minutes by default)
 - **Smart debouncing** - Waits 60 seconds after last change to avoid excessive reindexing
 - **Configurable** - Control monitoring behavior via `monitoring` section in config.json
 

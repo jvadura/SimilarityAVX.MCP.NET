@@ -23,6 +23,8 @@ public class ProjectMonitor : IDisposable
     private readonly ConcurrentDictionary<string, string> _projectDirectories = new(); // Track project -> directory mapping
     private readonly ConcurrentDictionary<string, ConcurrentBag<string>> _directoryProjects = new(); // Track directory -> projects mapping
     private readonly Timer _reindexTimer;
+    private readonly Timer? _periodicRescanTimer;
+    private readonly ConcurrentDictionary<string, DateTime> _lastPeriodicRescan = new();
     private readonly TimeSpan _debounceDelay;
     private readonly object _reindexLock = new();
     private bool _disposed;
@@ -32,6 +34,13 @@ public class ProjectMonitor : IDisposable
         _configuration = configuration;
         _debounceDelay = TimeSpan.FromSeconds(configuration.Monitoring.DebounceDelaySeconds);
         _reindexTimer = new Timer(ProcessPendingReindexes, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        
+        // Set up periodic rescan timer if enabled
+        if (_configuration.Monitoring.EnablePeriodicRescan && _configuration.Monitoring.PeriodicRescanMinutes > 0)
+        {
+            Console.Error.WriteLine($"[ProjectMonitor] Periodic rescan enabled - will check every {_configuration.Monitoring.PeriodicRescanMinutes} minutes");
+            _periodicRescanTimer = new Timer(ProcessPeriodicRescans, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+        }
     }
 
     /// <summary>
@@ -277,6 +286,80 @@ public class ProjectMonitor : IDisposable
     }
 
     /// <summary>
+    /// Timer callback that processes periodic rescans for all projects.
+    /// </summary>
+    private void ProcessPeriodicRescans(object? state)
+    {
+        if (_disposed || !_configuration.Monitoring.EnablePeriodicRescan) return;
+
+        var now = DateTime.UtcNow;
+        var rescanInterval = TimeSpan.FromMinutes(_configuration.Monitoring.PeriodicRescanMinutes);
+        var projectsToRescan = new List<string>();
+
+        // Check which projects need periodic rescan
+        foreach (var projectName in _projectDirectories.Keys)
+        {
+            if (!_lastPeriodicRescan.TryGetValue(projectName, out var lastRescan) || 
+                now - lastRescan >= rescanInterval)
+            {
+                projectsToRescan.Add(projectName);
+                _lastPeriodicRescan[projectName] = now;
+            }
+        }
+
+        // Schedule rescans
+        foreach (var projectName in projectsToRescan)
+        {
+            Console.Error.WriteLine($"[ProjectMonitor] Scheduling periodic rescan for '{projectName}'");
+            Task.Run(async () => await ForceRescanProjectAsync(projectName));
+        }
+    }
+
+    /// <summary>
+    /// Forces a rescan of a project by scheduling it for immediate reindexing.
+    /// </summary>
+    private async Task ForceRescanProjectAsync(string projectName)
+    {
+        try
+        {
+            Console.Error.WriteLine($"[ProjectMonitor] Starting periodic rescan for '{projectName}'...");
+            
+            // Get the project directory
+            var projectDir = await GetStoredProjectDirectory(projectName) ?? 
+                           GetProjectDirectoryFromDatabase(projectName);
+            
+            if (projectDir == null || !Directory.Exists(projectDir))
+            {
+                Console.Error.WriteLine($"[ProjectMonitor] Cannot rescan '{projectName}': directory not found");
+                return;
+            }
+
+            // Use FileSynchronizer to check for changes
+            var synchronizer = new FileSynchronizer();
+            var changes = synchronizer.GetChanges(projectDir, projectName);
+            
+            if (!changes.HasChanges)
+            {
+                Console.Error.WriteLine($"[ProjectMonitor] Periodic rescan of '{projectName}' found no changes");
+                return;
+            }
+
+            Console.Error.WriteLine($"[ProjectMonitor] Periodic rescan of '{projectName}' found {changes.Added.Count} added, " +
+                                  $"{changes.Modified.Count} modified, {changes.Removed.Count} removed files");
+
+            // Schedule immediate reindex by bypassing debounce delay
+            lock (_reindexLock)
+            {
+                _pendingReindexes[projectName] = DateTime.UtcNow.AddSeconds(-_configuration.Monitoring.DebounceDelaySeconds - 1);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[ProjectMonitor] Error during periodic rescan of '{projectName}': {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Reindexes a project after verifying changes with SHA256.
     /// </summary>
     private async Task ReindexProjectAsync(string projectName)
@@ -381,6 +464,7 @@ public class ProjectMonitor : IDisposable
         
         _disposed = true;
         _reindexTimer?.Dispose();
+        _periodicRescanTimer?.Dispose();
         
         foreach (var watcher in _watchers.Values)
         {
