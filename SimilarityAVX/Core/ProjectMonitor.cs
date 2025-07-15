@@ -145,6 +145,10 @@ public class ProjectMonitor : IDisposable
                 {
                     Console.Error.WriteLine($"[ProjectMonitor] Project '{projectName}' has {changes.Added.Count} added, {changes.Modified.Count} modified, {changes.Removed.Count} removed files.");
                     
+                    // Save state immediately since we have changes to process
+                    // This ensures the detected changes are recorded before reindexing
+                    synchronizer.SaveState(projectDir, projectName);
+                    
                     // Schedule immediate reindex for all projects in this directory
                     foreach (var proj in _directoryProjects[projectDir])
                     {
@@ -395,10 +399,8 @@ public class ProjectMonitor : IDisposable
                 return;
             }
             
-            // Save the state immediately so CodeIndexer has updated state
-            synchronizer.SaveState(projectDir, projectName);
-
             // Create indexer and perform incremental update
+            // Note: State will be saved by CodeIndexer after successful indexing
             using var indexer = new CodeIndexer(_configuration, projectName);
             var stats = await indexer.IndexDirectoryAsync(projectDir, false, null, changes);
             

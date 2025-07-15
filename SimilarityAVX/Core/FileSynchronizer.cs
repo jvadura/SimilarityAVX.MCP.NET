@@ -69,11 +69,7 @@ public class FileSynchronizer
             // Full scan - check all files
             currentFiles = GetFileHashes(directory);
             
-            // Update cache with current state
-            foreach (var kvp in currentFiles)
-            {
-                cache.AddOrUpdate(kvp.Key, kvp.Value, (k, v) => kvp.Value);
-            }
+            // DO NOT update cache here - we need to compare against the old state first!
         }
         
         // Compare against cache
@@ -91,7 +87,7 @@ public class FileSynchronizer
         {
             Console.Error.WriteLine($"[FileSynchronizer] Changes detected: +{added.Count} ~{modified.Count} -{removed.Count}");
             
-            // Update cache immediately
+            // Update cache only for changed files
             foreach (var file in removed)
             {
                 cache.TryRemove(file, out _);
@@ -99,6 +95,21 @@ public class FileSynchronizer
             foreach (var kvp in currentFiles.Where(kvp => added.Contains(kvp.Key) || modified.Contains(kvp.Key)))
             {
                 cache.AddOrUpdate(kvp.Key, kvp.Value, (k, v) => kvp.Value);
+            }
+        }
+        else if (changedFiles == null)
+        {
+            // For full scans with no changes detected, we still need to ensure cache is in sync
+            // This handles cases where cache might be out of sync (e.g., manual cache file edits)
+            // Remove files that no longer exist
+            foreach (var file in cache.Keys.Except(currentFiles.Keys).ToList())
+            {
+                cache.TryRemove(file, out _);
+            }
+            // Add any new files that somehow weren't detected as changes
+            foreach (var kvp in currentFiles.Where(kvp => !cache.ContainsKey(kvp.Key)))
+            {
+                cache.TryAdd(kvp.Key, kvp.Value);
             }
         }
         
