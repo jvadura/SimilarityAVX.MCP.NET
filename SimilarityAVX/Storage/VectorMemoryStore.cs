@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -16,6 +17,7 @@ namespace CSharpMcpServer.Storage;
 public class VectorMemoryStore
 {
     protected readonly List<VectorEntry> _entries = new();
+    private readonly object _entriesLock = new object();
     protected readonly int _dimension;
     protected readonly VectorPrecision _precision;
     protected readonly int _maxDegreeOfParallelism;
@@ -27,11 +29,12 @@ public class VectorMemoryStore
     
     // Incremental update support
     protected int _vectorCapacity;  // Actual array size
-    protected readonly Dictionary<string, int> _idToIndex = new();  // Map ID to vector index
-    protected readonly Dictionary<int, int> _vectorIndexToEntryIndex = new();  // Map vector index to entry index
-    protected readonly HashSet<int> _deletedIndices = new();  // Track deleted slots
+    protected readonly ConcurrentDictionary<string, int> _idToIndex = new();  // Map ID to vector index
+    protected readonly ConcurrentDictionary<int, int> _vectorIndexToEntryIndex = new();  // Map vector index to entry index
+    protected readonly ConcurrentDictionary<int, byte> _deletedIndices = new();  // Track deleted slots (using byte as dummy value)
     protected bool _needsCompaction = false;
     protected const double CompactionThreshold = 0.25;  // Compact when 25% deleted
+    private readonly object _compactionLock = new object();
     
     // CPU capabilities
     private readonly bool _supportsAvx512;
@@ -196,7 +199,14 @@ public class VectorMemoryStore
         // Compact if needed before search
         if (_needsCompaction && _deletedIndices.Count > _vectorCapacity * CompactionThreshold)
         {
-            CompactVectors();
+            lock (_compactionLock)
+            {
+                // Double-check after acquiring lock
+                if (_needsCompaction && _deletedIndices.Count > _vectorCapacity * CompactionThreshold)
+                {
+                    CompactVectors();
+                }
+            }
         }
         
         var scores = new float[_vectorCount];
@@ -221,7 +231,7 @@ public class VectorMemoryStore
         Parallel.For(0, _vectorCount, new ParallelOptions { MaxDegreeOfParallelism = _maxDegreeOfParallelism }, vectorIndex =>
         {
             // Skip deleted entries
-            if (_deletedIndices.Contains(vectorIndex))
+            if (_deletedIndices.ContainsKey(vectorIndex))
             {
                 scores[vectorIndex] = float.MinValue;
                 return;
@@ -248,7 +258,7 @@ public class VectorMemoryStore
         Parallel.For(0, _vectorCount, new ParallelOptions { MaxDegreeOfParallelism = _maxDegreeOfParallelism }, vectorIndex =>
         {
             // Skip deleted entries
-            if (_deletedIndices.Contains(vectorIndex))
+            if (_deletedIndices.ContainsKey(vectorIndex))
             {
                 scores[vectorIndex] = float.MinValue;
                 return;
@@ -519,7 +529,7 @@ public class VectorMemoryStore
         for (int i = 0; i < _vectorCount; i++)
         {
             // Skip deleted entries
-            if (_deletedIndices.Contains(i) || !_vectorIndexToEntryIndex.TryGetValue(i, out var entryIdx))
+            if (_deletedIndices.ContainsKey(i) || !_vectorIndexToEntryIndex.TryGetValue(i, out var entryIdx))
             {
                 combinedScores[i] = float.MinValue;
                 continue;
@@ -596,7 +606,7 @@ public class VectorMemoryStore
         for (int i = 0; i < _vectorCount; i++)
         {
             // Skip deleted entries
-            if (_deletedIndices.Contains(i) || !_vectorIndexToEntryIndex.TryGetValue(i, out var entryIdx)) 
+            if (_deletedIndices.ContainsKey(i) || !_vectorIndexToEntryIndex.TryGetValue(i, out var entryIdx)) 
                 continue;
             
             var entry = _entries[entryIdx];
@@ -792,9 +802,13 @@ public class VectorMemoryStore
         var idsSet = new HashSet<string>(idsToRemove);
         if (!idsSet.Any()) return;
         
-        var countBefore = _entries.Count;
-        _entries.RemoveAll(e => idsSet.Contains(e.Id));
-        var removed = countBefore - _entries.Count;
+        int removed;
+        lock (_entriesLock)
+        {
+            var countBefore = _entries.Count;
+            _entries.RemoveAll(e => idsSet.Contains(e.Id));
+            removed = countBefore - _entries.Count;
+        }
         
         if (removed > 0)
         {
@@ -833,7 +847,11 @@ public class VectorMemoryStore
     
     public void RemoveVectorsByPath(string filePath)
     {
-        var toRemove = _entries.Where(e => e.FilePath == filePath).Select(e => e.Id).ToList();
+        List<string> toRemove;
+        lock (_entriesLock)
+        {
+            toRemove = _entries.Where(e => e.FilePath == filePath).Select(e => e.Id).ToList();
+        }
         if (!toRemove.Any()) return;
         
         // Mark indices as deleted instead of rebuilding
@@ -841,14 +859,17 @@ public class VectorMemoryStore
         {
             if (_idToIndex.TryGetValue(id, out var index))
             {
-                _deletedIndices.Add(index);
-                _idToIndex.Remove(id);
-                _vectorIndexToEntryIndex.Remove(index);
+                _deletedIndices.TryAdd(index, 0);
+                _idToIndex.TryRemove(id, out _);
+                _vectorIndexToEntryIndex.TryRemove(index, out _);
             }
         }
         
         // Remove from entries list
-        _entries.RemoveAll(e => e.FilePath == filePath);
+        lock (_entriesLock)
+        {
+            _entries.RemoveAll(e => e.FilePath == filePath);
+        }
         
         // Check if we should compact
         double deletedRatio = (double)_deletedIndices.Count / _vectorCapacity;
@@ -982,9 +1003,11 @@ public class VectorMemoryStore
     
     private void CompactVectors()
     {
-        if (!_deletedIndices.Any())
+        lock (_compactionLock)
         {
-            _needsCompaction = false;
+            if (_deletedIndices.IsEmpty)
+            {
+                _needsCompaction = false;
             return;
         }
         
@@ -1002,7 +1025,7 @@ public class VectorMemoryStore
             // Copy non-deleted vectors
             for (int i = 0; i < _vectorCount; i++)
             {
-                if (!_deletedIndices.Contains(i))
+                if (!_deletedIndices.ContainsKey(i))
                 {
                     Array.Copy(_allVectorsHalf!, i * _dimension, newArray, writeIndex * _dimension, _dimension);
                     writeIndex++;
@@ -1019,7 +1042,7 @@ public class VectorMemoryStore
             // Copy non-deleted vectors
             for (int i = 0; i < _vectorCount; i++)
             {
-                if (!_deletedIndices.Contains(i))
+                if (!_deletedIndices.ContainsKey(i))
                 {
                     Array.Copy(_allVectorsFloat32!, i * _dimension, newArray, writeIndex * _dimension, _dimension);
                     writeIndex++;
@@ -1045,6 +1068,7 @@ public class VectorMemoryStore
         
         var stats = GetStats();
         Console.Error.WriteLine($"[VectorStore] Compaction complete: {_vectorCount} vectors, {stats.VectorsMemoryMB:F1}MB vectors");
+        }
     }
 }
 

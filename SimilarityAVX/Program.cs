@@ -83,6 +83,14 @@ else
     var app = builder.Build();
     app.MapMcp();
     
+    // Register shutdown handler to dispose resources
+    var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+    lifetime.ApplicationStopping.Register(() =>
+    {
+        Console.Error.WriteLine("[MCP] Application stopping, disposing resources...");
+        CSharpMcpServer.Protocol.MultiProjectCodeSearchTools.DisposeAllIndexers();
+    });
+    
     await app.RunAsync("http://*:5001");
     return 0;
 }
@@ -114,7 +122,7 @@ async Task<int> RunConsoleMode(string[] args)
         var command = args[0].ToLower();
 
         // Create indexer (no project name for console mode)
-        var indexer = new CodeIndexer(config, null);
+        using var indexer = new CodeIndexer(config, null);
         
         // Progress reporting
         var progress = new Progress<IndexProgress>(p =>

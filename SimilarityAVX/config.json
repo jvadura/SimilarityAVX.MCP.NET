@@ -26,5 +26,9 @@
     "verifyOnStartup": true,
     "debounceDelaySeconds": 60,
     "enableFileWatching": true
+  },
+  "security": {
+    "allowedDirectories": ["E:\\"],
+    "enablePathValidation": true
   }
 }

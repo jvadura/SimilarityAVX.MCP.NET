@@ -19,9 +19,9 @@ public class ProjectMonitor : IDisposable
     private readonly Configuration _configuration;
     private readonly ConcurrentDictionary<string, ProjectWatcher> _watchers = new();
     private readonly ConcurrentDictionary<string, DateTime> _pendingReindexes = new();
-    private readonly ConcurrentDictionary<string, HashSet<string>> _pendingFileChanges = new(); // Track files changed per project
+    private readonly ConcurrentDictionary<string, ConcurrentBag<string>> _pendingFileChanges = new(); // Track files changed per project
     private readonly ConcurrentDictionary<string, string> _projectDirectories = new(); // Track project -> directory mapping
-    private readonly ConcurrentDictionary<string, HashSet<string>> _directoryProjects = new(); // Track directory -> projects mapping
+    private readonly ConcurrentDictionary<string, ConcurrentBag<string>> _directoryProjects = new(); // Track directory -> projects mapping
     private readonly Timer _reindexTimer;
     private readonly TimeSpan _debounceDelay;
     private readonly object _reindexLock = new();
@@ -118,11 +118,11 @@ public class ProjectMonitor : IDisposable
             // Track project directory mapping
             _projectDirectories[projectName] = projectDir;
             _directoryProjects.AddOrUpdate(projectDir, 
-                new HashSet<string> { projectName },
+                key => { var bag = new ConcurrentBag<string>(); bag.Add(projectName); return bag; },
                 (key, existing) => { existing.Add(projectName); return existing; });
             
             // Skip verification if another project already verified this directory
-            if (_directoryProjects[projectDir].Count > 1)
+            if (_directoryProjects[projectDir].Count() > 1)
             {
                 Console.Error.WriteLine($"[ProjectMonitor] Project '{projectName}' shares directory with another project, skipping verification.");
             }
@@ -142,8 +142,8 @@ public class ProjectMonitor : IDisposable
                         _pendingReindexes[proj] = DateTime.UtcNow;
                         
                         // Track specific files that changed for incremental processing
-                        var fileSet = _pendingFileChanges.GetOrAdd(proj, _ => new HashSet<string>());
-                        lock (fileSet)
+                        var fileSet = _pendingFileChanges.GetOrAdd(proj, _ => new ConcurrentBag<string>());
+                        if (fileSet != null)
                         {
                             foreach (var file in changes.Added.Concat(changes.Modified).Concat(changes.Removed))
                             {
@@ -233,11 +233,8 @@ public class ProjectMonitor : IDisposable
                         _pendingReindexes[proj] = DateTime.UtcNow;
                         
                         // Track the specific file that changed
-                        var fileSet = _pendingFileChanges.GetOrAdd(proj, _ => new HashSet<string>());
-                        lock (fileSet)
-                        {
-                            fileSet.Add(filePath);
-                        }
+                        var fileSet = _pendingFileChanges.GetOrAdd(proj, _ => new ConcurrentBag<string>());
+                        fileSet.Add(filePath);
                         
                         Console.Error.WriteLine($"[ProjectMonitor] File change detected in '{proj}': {changeType} - {filePath}");
                     }
@@ -301,7 +298,7 @@ public class ProjectMonitor : IDisposable
             HashSet<string>? changedFiles = null;
             if (_pendingFileChanges.TryRemove(projectName, out var fileSet))
             {
-                changedFiles = fileSet;
+                changedFiles = new HashSet<string>(fileSet);
                 Console.Error.WriteLine($"[ProjectMonitor] Processing {changedFiles.Count} specific file changes for '{projectName}'");
             }
             

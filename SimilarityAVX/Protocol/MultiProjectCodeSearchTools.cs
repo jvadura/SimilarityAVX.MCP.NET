@@ -60,7 +60,10 @@ public static class MultiProjectCodeSearchTools
             throw new ArgumentException("Project name is required for all operations");
         }
         
-        return _projectIndexers.GetOrAdd(projectName, name =>
+        // Validate project name
+        var sanitizedName = PathValidator.ValidateProjectName(projectName);
+        
+        return _projectIndexers.GetOrAdd(sanitizedName, name =>
         {
             var config = Configuration.Load();
             config.Validate();
@@ -79,12 +82,30 @@ public static class MultiProjectCodeSearchTools
     {
         try
         {
+            // Validate project name to prevent directory traversal
+            var sanitizedProject = PathValidator.ValidateProjectName(project);
+            if (sanitizedProject != project)
+            {
+                return $"Error: Invalid project name '{project}'. Project names cannot contain path separators or special characters.";
+            }
+            
             // Convert WSL path to Windows path if needed
             var convertedDirectory = PathConverter.ConvertPath(directory);
             
             if (!Directory.Exists(convertedDirectory))
             {
                 return $"Error: Directory not found: {convertedDirectory} (original: {directory})";
+            }
+            
+            // Load configuration and check path validation
+            var config = Configuration.Load();
+            if (config.Security.EnablePathValidation)
+            {
+                if (!PathValidator.IsPathAllowed(convertedDirectory, config.Security.AllowedDirectories))
+                {
+                    return $"Error: Directory '{PathValidator.GetSafeDisplayPath(convertedDirectory)}' is not in the allowed directories list. " +
+                           $"Allowed directories: {string.Join(", ", config.Security.AllowedDirectories)}";
+                }
             }
             
             var indexer = GetProjectIndexer(project);
@@ -1568,5 +1589,55 @@ public static class MultiProjectCodeSearchTools
         sb.AppendLine("- Enhanced auth types require reindexing for older projects");
         
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Disposes all cached indexers. Should be called on application shutdown.
+    /// </summary>
+    public static void DisposeAllIndexers()
+    {
+        foreach (var kvp in _projectIndexers.ToList())
+        {
+            if (_projectIndexers.TryRemove(kvp.Key, out var indexer))
+            {
+                try
+                {
+                    indexer?.Dispose();
+                    Console.Error.WriteLine($"[MCP] Disposed indexer for project '{kvp.Key}'");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[MCP] Error disposing indexer for project '{kvp.Key}': {ex.Message}");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Disposes a specific project's indexer and removes it from cache.
+    /// </summary>
+    public static bool DisposeProjectIndexer(string projectName)
+    {
+        if (string.IsNullOrEmpty(projectName))
+            return false;
+
+        var sanitizedName = PathValidator.ValidateProjectName(projectName);
+
+        if (_projectIndexers.TryRemove(sanitizedName, out var indexer))
+        {
+            try
+            {
+                indexer?.Dispose();
+                Console.Error.WriteLine($"[MCP] Disposed indexer for project '{sanitizedName}'");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[MCP] Error disposing indexer for project '{sanitizedName}': {ex.Message}");
+                return false;
+            }
+        }
+
+        return false;
     }
 }

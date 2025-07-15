@@ -141,7 +141,7 @@ public class FileSynchronizer
     
     private Dictionary<string, string> GetFileHashes(string directory)
     {
-        var hashes = new Dictionary<string, string>();
+        var hashes = new ConcurrentDictionary<string, string>();
         
         try
         {
@@ -165,10 +165,7 @@ public class FileSynchronizer
                     using var stream = File.OpenRead(file);
                     var hash = Convert.ToBase64String(sha.ComputeHash(stream));
                     
-                    lock (hashes)
-                    {
-                        hashes[file] = hash;
-                    }
+                    hashes.TryAdd(file, hash);
                 }
                 catch (Exception ex)
                 {
@@ -181,7 +178,7 @@ public class FileSynchronizer
             Console.Error.WriteLine($"[FileSynchronizer] Error scanning directory: {ex.Message}");
         }
         
-        return hashes;
+        return new Dictionary<string, string>(hashes);
     }
     
     private Dictionary<string, string> LoadState(string stateFile)

@@ -425,3 +425,4 @@ FodyWeavers.xsd
 # Test files with sensitive project data
 CLAUDE.md
 .claude*
+Claude

@@ -26,6 +26,9 @@ public class Configuration
     [JsonPropertyName("debug")]
     public DebugConfig Debug { get; set; } = new();
     
+    [JsonPropertyName("security")]
+    public SecurityConfig Security { get; set; } = new();
+    
     /// <summary>
     /// Load configuration from JSON file with environment variable fallbacks
     /// </summary>
@@ -236,4 +239,13 @@ public enum EmbeddingProvider
 {
     OpenAI,
     VoyageAI
+}
+
+public class SecurityConfig
+{
+    [JsonPropertyName("allowedDirectories")]
+    public List<string> AllowedDirectories { get; set; } = new() { "/mnt/e/" };
+    
+    [JsonPropertyName("enablePathValidation")]
+    public bool EnablePathValidation { get; set; } = true;
 }
