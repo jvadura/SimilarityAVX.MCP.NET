@@ -75,6 +75,16 @@ dotnet build -c Release
     "batchSize": 50,
     "maxRetries": 6,
     "retryDelayMs": 1000
+  },
+  "security": {
+    "allowedDirectories": ["E:\\"],     // Whitelist directories for indexing
+    "enablePathValidation": true        // Enforce directory restrictions
+  },
+  "monitoring": {
+    "enableAutoReindex": true,          // Auto-sync with code changes
+    "verifyOnStartup": true,            // Check for changes on startup
+    "debounceDelaySeconds": 60,         // Wait after last file change
+    "enableFileWatching": true          // Real-time monitoring
   }
 }
 ```
@@ -162,6 +172,21 @@ dotnet run -c Release -- bench [dimension] [vectors] [iterations] [searches]
 - Security audits requiring exhaustive search
 
 ## Configuration
+
+### Security Settings
+
+The server includes built-in security features:
+- **Path validation** - Projects are restricted to whitelisted directories (default: `E:\`)
+- **Directory traversal protection** - Project names are sanitized to prevent path escaping
+- **Configurable whitelist** - Add allowed paths via `security.allowedDirectories` in config.json
+
+### Automatic Monitoring
+
+The server automatically keeps your search index synchronized:
+- **Startup verification** - Checks all projects for changes when the server starts
+- **Real-time monitoring** - Watches for code changes and reindexes automatically
+- **Smart debouncing** - Waits 60 seconds after last change to avoid excessive reindexing
+- **Configurable** - Control monitoring behavior via `monitoring` section in config.json
 
 ### Score Thresholds by Embedding Model
 
