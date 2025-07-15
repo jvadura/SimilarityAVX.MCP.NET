@@ -69,6 +69,12 @@ else
         options.LogToStandardErrorThreshold = LogLevel.Information;
     });
     
+    // Add configuration as singleton
+    builder.Services.AddSingleton(Configuration.Load());
+    
+    // Add ProjectMonitor as a hosted service for automatic monitoring
+    builder.Services.AddHostedService<ProjectMonitorService>();
+    
     // Add MCP server with tools
     builder.Services.AddMcpServer()
         .WithHttpTransport()  // HTTP transport with SSE for cross-machine access

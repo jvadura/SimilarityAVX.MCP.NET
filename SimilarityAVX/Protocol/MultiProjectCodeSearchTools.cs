@@ -376,6 +376,30 @@ public static class MultiProjectCodeSearchTools
             return $"Error: {ex.Message}";
         }
     }
+    
+    [McpServerTool]
+    [Description("Get the project root directory for an indexed project by analyzing file paths in the database.")]
+    public static string GetProjectDirectory(
+        [Description("Project name to get directory for")] string project)
+    {
+        try
+        {
+            var directory = Protocol.GetProjectDirectory.GetDirectory(project);
+            
+            if (directory == null)
+            {
+                return $"Project '{project}' not found or has no indexed files. Use ListProjects to see available projects.";
+            }
+            
+            return $"Project '{project}' root directory: {directory}";
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[MCP] Error getting project directory: {ex}");
+            return $"Error: {ex.Message}";
+        }
+    }
+    
     /*
     [McpServerTool]
     [Description("Test and debug WSL-to-Windows path conversion. Use this when IndexProject fails with 'Directory not found' errors to verify the path translation is working correctly.")]

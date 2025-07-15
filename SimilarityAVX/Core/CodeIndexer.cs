@@ -77,6 +77,12 @@ public class CodeIndexer : IDisposable
         
         progress?.Report(new IndexProgress { Phase = "Detecting changes", Current = 0, Total = 1 });
         
+        // Store project directory in metadata for future use
+        if (!string.IsNullOrEmpty(_projectName))
+        {
+            _storage.SaveMetadata("project_directory", directory);
+        }
+        
         // Get file changes
         var changes = forceReindex 
             ? GetAllCsFiles(directory) 

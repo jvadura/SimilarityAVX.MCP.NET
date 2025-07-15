@@ -20,5 +20,11 @@
   },
   "api": {
     "enableMcp": true
+  },
+  "monitoring": {
+    "enableAutoReindex": true,
+    "verifyOnStartup": true,
+    "debounceDelaySeconds": 60,
+    "enableFileWatching": true
   }
 }

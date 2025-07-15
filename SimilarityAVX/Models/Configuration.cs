@@ -20,6 +20,9 @@ public class Configuration
     [JsonPropertyName("api")]
     public ApiConfig Api { get; set; } = new();
     
+    [JsonPropertyName("monitoring")]
+    public MonitoringConfig Monitoring { get; set; } = new();
+    
     [JsonPropertyName("debug")]
     public DebugConfig Debug { get; set; } = new();
     
@@ -190,6 +193,21 @@ public class ApiConfig
     
     [JsonPropertyName("enableMcp")]
     public bool EnableMcp { get; set; } = true;
+}
+
+public class MonitoringConfig
+{
+    [JsonPropertyName("enableAutoReindex")]
+    public bool EnableAutoReindex { get; set; } = true;
+    
+    [JsonPropertyName("verifyOnStartup")]
+    public bool VerifyOnStartup { get; set; } = true;
+    
+    [JsonPropertyName("debounceDelaySeconds")]
+    public int DebounceDelaySeconds { get; set; } = 60;
+    
+    [JsonPropertyName("enableFileWatching")]
+    public bool EnableFileWatching { get; set; } = true;
 }
 
 public class DebugConfig
