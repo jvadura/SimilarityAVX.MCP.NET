@@ -232,6 +232,12 @@ public class ProjectMonitor : IDisposable
             return;
         }
 
+        // Early filtering of ignored paths to prevent unnecessary reindexing
+        if (ShouldIgnorePath(filePath))
+        {
+            return;
+        }
+
         lock (_reindexLock)
         {
             // Get the directory for this project
@@ -479,6 +485,66 @@ public class ProjectMonitor : IDisposable
     /// <summary>
     /// Internal class that wraps FileSystemWatcher for a single project.
     /// </summary>
+    /// <summary>
+    /// Checks if a file path should be ignored based on common ignore patterns.
+    /// This is a duplicate of FileSynchronizer.ShouldIgnore to enable early filtering.
+    /// </summary>
+    private bool ShouldIgnorePath(string filePath)
+    {
+        // Common ignore patterns - duplicated from FileSynchronizer for early filtering
+        string[] ignorePatterns = 
+        {
+            "bin/", "obj/", ".vs/", "packages/", "TestResults/",
+            "*.dll", "*.exe", "*.pdb", "*.cache", "*.user",
+            ".git/", "node_modules/", "dist/", "build/",
+            "*.min.js", "*.min.css", "_ReSharper*/", "*.suo",
+            "Migrations/"
+        };
+
+        var normalizedPath = filePath.Replace('\\', '/');
+        var fileName = Path.GetFileName(filePath);
+
+        foreach (var pattern in ignorePatterns)
+        {
+            // Directory patterns (ending with /)
+            if (pattern.EndsWith('/'))
+            {
+                var dirPattern = pattern.TrimEnd('/');
+                if (normalizedPath.Contains($"/{dirPattern}/") || 
+                    normalizedPath.Contains($"\\{dirPattern}\\"))
+                {
+                    return true;
+                }
+            }
+            // Extension patterns (starting with *)
+            else if (pattern.StartsWith('*'))
+            {
+                var extension = pattern.Substring(1);
+                if (fileName.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            // Wildcard patterns (containing *)
+            else if (pattern.Contains('*'))
+            {
+                var parts = pattern.Split('*');
+                if (parts.Length == 2 && normalizedPath.Contains(parts[0]) && 
+                    normalizedPath.Contains(parts[1]))
+                {
+                    return true;
+                }
+            }
+            // Simple contains check
+            else if (normalizedPath.Contains(pattern))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private class ProjectWatcher : IDisposable
     {
         private readonly string _projectName;
