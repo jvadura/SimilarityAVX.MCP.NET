@@ -919,10 +919,10 @@ public class RoslynParser
             var chunks = new List<CodeChunk>();
             var lines = content.Split('\n');
             
-            // Extract @using directives
-            var usings = new List<string>();
-            var htmlSections = new List<string>();
-            var codeSections = new List<string>();
+            // Track sections with their actual line numbers
+            var usings = new List<(string content, int startLine, int endLine)>();
+            var htmlSections = new List<(string content, int startLine, int endLine)>();
+            var codeSections = new List<(string content, int startLine, int endLine)>();
             
             int lineIndex = 0;
             while (lineIndex < lines.Length)
@@ -932,7 +932,7 @@ public class RoslynParser
                 // Extract @using directives
                 if (line.StartsWith("@using "))
                 {
-                    usings.Add(line);
+                    usings.Add((line, lineIndex + 1, lineIndex + 1)); // +1 for 1-based line numbers
                     lineIndex++;
                     continue;
                 }
@@ -940,10 +940,12 @@ public class RoslynParser
                 // Extract @code blocks
                 if (line.StartsWith("@code"))
                 {
+                    int blockStartLine = lineIndex + 1; // +1 for 1-based line numbers
                     var codeBlock = ExtractCodeBlock(lines, ref lineIndex);
+                    int blockEndLine = lineIndex; // lineIndex is already at the line after the block
                     if (!string.IsNullOrWhiteSpace(codeBlock))
                     {
-                        codeSections.Add(codeBlock);
+                        codeSections.Add((codeBlock, blockStartLine, blockEndLine));
                     }
                     continue;
                 }
@@ -951,10 +953,12 @@ public class RoslynParser
                 // Extract @functions blocks
                 if (line.StartsWith("@functions"))
                 {
+                    int blockStartLine = lineIndex + 1; // +1 for 1-based line numbers
                     var functionsBlock = ExtractCodeBlock(lines, ref lineIndex);
+                    int blockEndLine = lineIndex; // lineIndex is already at the line after the block
                     if (!string.IsNullOrWhiteSpace(functionsBlock))
                     {
-                        codeSections.Add(functionsBlock);
+                        codeSections.Add((functionsBlock, blockStartLine, blockEndLine));
                     }
                     continue;
                 }
@@ -962,10 +966,12 @@ public class RoslynParser
                 // Collect HTML/Razor markup sections
                 if (!string.IsNullOrWhiteSpace(line) && !line.StartsWith("@") || line.Contains("@bind") || line.Contains("@onclick"))
                 {
+                    int sectionStartLine = lineIndex + 1; // +1 for 1-based line numbers
                     var htmlSection = ExtractHtmlSection(lines, ref lineIndex);
+                    int sectionEndLine = lineIndex; // lineIndex is already at the line after the section
                     if (!string.IsNullOrWhiteSpace(htmlSection))
                     {
-                        htmlSections.Add(htmlSection);
+                        htmlSections.Add((htmlSection, sectionStartLine, sectionEndLine));
                     }
                     continue;
                 }
@@ -978,20 +984,22 @@ public class RoslynParser
             // 1. @using directives chunk
             if (usings.Any())
             {
-                var usingContent = string.Join("\n", usings);
+                var usingContent = string.Join("\n", usings.Select(u => u.content));
+                var startLine = usings.First().startLine;
+                var endLine = usings.Last().endLine;
                 chunks.Add(new CodeChunk(
-                    $"{filePath}:1",
+                    $"{filePath}:{startLine}",
                     usingContent,
                     filePath,
-                    1,
-                    usings.Count,
+                    startLine,
+                    endLine,
                     "razor-using"
                 ));
             }
             
             // 2. Parse @code sections as C# code
             int codeIndex = 1;
-            foreach (var codeSection in codeSections)
+            foreach (var (codeSection, sectionStartLine, sectionEndLine) in codeSections)
             {
                 // Parse the C# code inside @code blocks
                 try
@@ -1030,11 +1038,11 @@ public class RoslynParser
                     {
                         var fullCodeContent = $"// Razor @code block in {Path.GetFileName(filePath)}\n{codeSection}";
                         chunks.Add(new CodeChunk(
-                            $"{filePath}:code{codeIndex}",
+                            $"{filePath}:{sectionStartLine}:code{codeIndex}",
                             fullCodeContent.Length > MaxChunkSize ? fullCodeContent.Substring(0, MaxChunkSize) + "\n// ... truncated" : fullCodeContent,
                             filePath,
-                            1,
-                            codeSection.Split('\n').Length,
+                            sectionStartLine,
+                            sectionEndLine,
                             "razor-code"
                         ));
                     }
@@ -1045,31 +1053,28 @@ public class RoslynParser
                     // Fallback: add as text chunk
                     var fallbackContent = $"// Razor @code block in {Path.GetFileName(filePath)}\n{codeSection}";
                     chunks.Add(new CodeChunk(
-                        $"{filePath}:code{codeIndex}",
+                        $"{filePath}:{sectionStartLine}:code{codeIndex}",
                         fallbackContent.Length > MaxChunkSize ? fallbackContent.Substring(0, MaxChunkSize) + "\n// ... truncated" : fallbackContent,
                         filePath,
-                        1,
-                        codeSection.Split('\n').Length,
+                        sectionStartLine,
+                        sectionEndLine,
                         "razor-code"
                     ));
                 }
-                codeIndex++;
             }
             
             // 3. Create chunks for significant HTML/Razor sections
-            int htmlIndex = 1;
-            foreach (var htmlSection in htmlSections.Where(h => h.Length > 100)) // Only significant sections
+            foreach (var (htmlSection, startLine, endLine) in htmlSections.Where(h => h.content.Length > 100)) // Only significant sections
             {
                 var htmlContent = $"<!-- Razor markup in {Path.GetFileName(filePath)} -->\n{htmlSection}";
                 chunks.Add(new CodeChunk(
-                    $"{filePath}:html{htmlIndex}",
+                    $"{filePath}:{startLine}",
                     htmlContent.Length > MaxChunkSize ? htmlContent.Substring(0, MaxChunkSize) + "\n<!-- ... truncated -->" : htmlContent,
                     filePath,
-                    1,
-                    htmlSection.Split('\n').Length,
+                    startLine,
+                    endLine,
                     "razor-html"
                 ));
-                htmlIndex++;
             }
             
             // If no chunks were created, add the whole file as fallback
@@ -1218,11 +1223,12 @@ public class RoslynParser
         return string.Join("\n", parts);
     }
     
-    private CodeChunk CreateRazorChunk(string content, SyntaxNode node, string filePath, string chunkType, int index)
+    private CodeChunk CreateRazorChunk(string content, SyntaxNode node, string filePath, string chunkType, int index, int sectionStartLine = 0)
     {
         var lineSpan = node.GetLocation().GetLineSpan();
-        var startLine = lineSpan.StartLinePosition.Line + 1;
-        var endLine = lineSpan.EndLinePosition.Line + 1;
+        // Add the section's start line offset to get the actual file line numbers
+        var startLine = lineSpan.StartLinePosition.Line + sectionStartLine;
+        var endLine = lineSpan.EndLinePosition.Line + sectionStartLine;
         
         // Ensure content isn't too large
         if (content.Length > MaxChunkSize)
@@ -1230,8 +1236,9 @@ public class RoslynParser
             content = content.Substring(0, MaxChunkSize) + "\n// ... truncated";
         }
         
+        // Use index to ensure unique IDs even if multiple elements are at the same line
         return new CodeChunk(
-            $"{filePath}:{startLine}",
+            $"{filePath}:{startLine}:{chunkType}{index}",
             content.Trim(),
             filePath,
             startLine,

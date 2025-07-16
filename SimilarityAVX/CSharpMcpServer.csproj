@@ -8,8 +8,11 @@
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="Claude\nutriexpert\**" />
     <Compile Remove="test-auth-project\**" />
+    <EmbeddedResource Remove="Claude\nutriexpert\**" />
     <EmbeddedResource Remove="test-auth-project\**" />
+    <None Remove="Claude\nutriexpert\**" />
     <None Remove="test-auth-project\**" />
   </ItemGroup>
 
