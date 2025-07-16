@@ -23,7 +23,8 @@ public class FileSynchronizer
         "bin/", "obj/", ".vs/", "packages/", "TestResults/",
         "*.dll", "*.exe", "*.pdb", "*.cache", "*.user",
         ".git/", "node_modules/", "dist/", "build/",
-        "*.min.js", "*.min.css", "_ReSharper*/", "*.suo"
+        "*.min.js", "*.min.css", "_ReSharper*/", "*.suo",
+        "Migrations/"
     };
     
     public FileSynchronizer(int maxDegreeOfParallelism = 16)

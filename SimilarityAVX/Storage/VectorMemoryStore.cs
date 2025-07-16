@@ -745,9 +745,16 @@ public class VectorMemoryStore
     public void Clear()
     {
         _entries.Clear();
+        _idToIndex.Clear();
+        _vectorIndexToEntryIndex.Clear();
+        _deletedIndices.Clear();
         _allVectorsFloat32 = null;
         _allVectorsHalf = null;
         _vectorCount = 0;
+        _vectorCapacity = 0;
+        _needsCompaction = false;
+        
+        Console.Error.WriteLine($"[VectorStore] Memory store cleared completely");
     }
     
     public void AppendVectors(IEnumerable<VectorEntry> newEntries)

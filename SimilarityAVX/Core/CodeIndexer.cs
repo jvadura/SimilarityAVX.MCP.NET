@@ -89,6 +89,13 @@ public class CodeIndexer : IDisposable
         
         if (forceReindex)
         {
+            // Clear existing data when force reindexing
+            Console.Error.WriteLine($"[CodeIndexer] Force reindex requested - clearing existing data for project '{_projectName}'");
+            _storage.Clear();
+            _memoryStore.Clear();
+            _synchronizer.ClearState();
+            await _cache.ClearProjectCacheAsync();
+            
             changes = GetAllCsFiles(directory);
         }
         else if (precomputedChanges != null)
