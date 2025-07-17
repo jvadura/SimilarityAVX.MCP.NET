@@ -578,6 +578,8 @@ namespace CSharpMcpServer.Protocol
         {
             try
             {
+                filePath = PathConverter.ConvertPath(filePath);
+
                 // Validate file exists
                 if (!System.IO.File.Exists(filePath))
                 {
@@ -957,9 +959,6 @@ namespace CSharpMcpServer.Protocol
                     case "json":
                         exportContent = ExportAsJson(rootMemories, memoryLookup, maxDepth, includeContent, includeMetadata);
                         break;
-                    case "yaml":
-                        exportContent = ExportAsYaml(rootMemories, memoryLookup, maxDepth, includeContent, includeMetadata);
-                        break;
                     case "markdown":
                     default:
                         exportContent = ExportAsMarkdown(rootMemories, memoryLookup, maxDepth, includeContent, includeMetadata);
@@ -1157,101 +1156,6 @@ namespace CSharpMcpServer.Protocol
             
             visitedIds.Remove(memory.Id);
             return node;
-        }
-        
-        /// <summary>
-        /// Export memories as YAML
-        /// </summary>
-        private string ExportAsYaml(List<Memory> rootMemories, Dictionary<int, Memory> memoryLookup,
-                                   int maxDepth, bool includeContent, bool includeMetadata)
-        {
-            var builder = new System.Text.StringBuilder();
-            builder.AppendLine("# Memory Export");
-            builder.AppendLine($"exportDate: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
-            builder.AppendLine($"totalMemories: {rootMemories.Count}");
-            builder.AppendLine("memories:");
-            
-            var visitedIds = new HashSet<int>();
-            foreach (var root in rootMemories)
-            {
-                ExportYamlNode(builder, root, memoryLookup, visitedIds, 1, maxDepth, includeContent, includeMetadata);
-            }
-            
-            return builder.ToString();
-        }
-        
-        /// <summary>
-        /// Recursively export a memory node as YAML
-        /// </summary>
-        private void ExportYamlNode(System.Text.StringBuilder builder, Memory memory,
-                                   Dictionary<int, Memory> memoryLookup, HashSet<int> visitedIds,
-                                   int indentLevel, int maxDepth, bool includeContent, bool includeMetadata)
-        {
-            var indent = new string(' ', indentLevel * 2);
-            
-            if (visitedIds.Contains(memory.Id))
-            {
-                builder.AppendLine($"{indent}- circularReference: true");
-                builder.AppendLine($"{indent}  id: {memory.Id}");
-                builder.AppendLine($"{indent}  name: {memory.MemoryName}");
-                return;
-            }
-            
-            visitedIds.Add(memory.Id);
-            
-            builder.AppendLine($"{indent}- id: {memory.Id}");
-            builder.AppendLine($"{indent}  name: {memory.MemoryName}");
-            
-            if (!string.IsNullOrEmpty(memory.Alias))
-                builder.AppendLine($"{indent}  alias: {memory.Alias}");
-            
-            if (includeMetadata)
-            {
-                if (memory.Tags.Any())
-                {
-                    builder.AppendLine($"{indent}  tags:");
-                    foreach (var tag in memory.Tags)
-                        builder.AppendLine($"{indent}    - {tag}");
-                }
-                builder.AppendLine($"{indent}  timestamp: {memory.Timestamp:yyyy-MM-dd HH:mm:ss} UTC");
-                builder.AppendLine($"{indent}  sizeKB: {memory.SizeInKBytes:F2}");
-                builder.AppendLine($"{indent}  lines: {memory.LinesCount}");
-            }
-            
-            if (includeContent && !string.IsNullOrWhiteSpace(memory.FullDocumentText))
-            {
-                builder.AppendLine($"{indent}  content: |");
-                var contentLines = memory.FullDocumentText.Split('\n');
-                foreach (var line in contentLines)
-                {
-                    builder.AppendLine($"{indent}    {line}");
-                }
-            }
-            
-            if (indentLevel < maxDepth && memory.ChildMemoryIds.Any())
-            {
-                var children = memory.ChildMemoryIds
-                    .Where(id => memoryLookup.ContainsKey(id))
-                    .Select(id => memoryLookup[id])
-                    .OrderBy(m => m.MemoryName)
-                    .ToList();
-                
-                if (children.Any())
-                {
-                    builder.AppendLine($"{indent}  children:");
-                    foreach (var child in children)
-                    {
-                        ExportYamlNode(builder, child, memoryLookup, visitedIds,
-                                     indentLevel + 2, maxDepth, includeContent, includeMetadata);
-                    }
-                }
-            }
-            else if (memory.ChildMemoryIds.Any())
-            {
-                builder.AppendLine($"{indent}  childrenOmitted: {memory.ChildMemoryIds.Count}");
-            }
-            
-            visitedIds.Remove(memory.Id);
         }
         
         /// <summary>
