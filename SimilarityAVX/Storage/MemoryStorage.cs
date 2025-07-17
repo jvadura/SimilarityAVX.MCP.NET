@@ -217,6 +217,95 @@ namespace CSharpMcpServer.Storage
             return count > 0;
         }
         
+        public async Task<bool> UpdateMemoryAsync(int memoryId, string? newName, string? newContent, List<string>? newTags)
+        {
+            if (_connection == null) throw new InvalidOperationException("Database not initialized");
+            
+            // Build UPDATE query dynamically based on what needs updating
+            var updates = new List<string>();
+            var parameters = new Dictionary<string, object>();
+            
+            if (newName != null)
+            {
+                updates.Add("memory_name = @name");
+                parameters["@name"] = newName;
+                
+                // Update alias if name changed
+                var newAlias = Utils.AliasGenerator.GenerateUniqueAlias(newName, alias => AliasExistsAsync(alias, memoryId).Result);
+                updates.Add("alias = @alias");
+                parameters["@alias"] = newAlias;
+            }
+            
+            if (newContent != null)
+            {
+                updates.Add("full_document_text = @content");
+                parameters["@content"] = newContent;
+                
+                // Update metadata
+                var lines = newContent.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries).Length;
+                var sizeKb = System.Text.Encoding.UTF8.GetByteCount(newContent) / 1024.0;
+                updates.Add("lines_count = @lines");
+                updates.Add("size_kb = @size");
+                parameters["@lines"] = lines;
+                parameters["@size"] = sizeKb;
+            }
+            
+            if (newTags != null)
+            {
+                updates.Add("tags = @tags");
+                parameters["@tags"] = JsonSerializer.Serialize(newTags, _jsonOptions);
+            }
+            
+            if (!updates.Any())
+                return false; // Nothing to update
+            
+            // Always update the updated_at timestamp
+            updates.Add("updated_at = CURRENT_TIMESTAMP");
+            
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = $@"
+                UPDATE memories 
+                SET {string.Join(", ", updates)} 
+                WHERE id = @id AND project_name = @project_name";
+            
+            cmd.Parameters.AddWithValue("@id", memoryId);
+            cmd.Parameters.AddWithValue("@project_name", _projectName);
+            
+            foreach (var param in parameters)
+            {
+                cmd.Parameters.AddWithValue(param.Key, param.Value);
+            }
+            
+            var rowsAffected = await cmd.ExecuteNonQueryAsync();
+            return rowsAffected > 0;
+        }
+        
+        private async Task<bool> AliasExistsAsync(string alias, int? excludeMemoryId = null)
+        {
+            if (_connection == null) throw new InvalidOperationException("Database not initialized");
+            
+            using var cmd = _connection.CreateCommand();
+            if (excludeMemoryId.HasValue)
+            {
+                cmd.CommandText = @"
+                    SELECT COUNT(*) FROM memories 
+                    WHERE alias = @alias AND id != @excludeId AND project_name = @project_name";
+                cmd.Parameters.AddWithValue("@alias", alias);
+                cmd.Parameters.AddWithValue("@excludeId", excludeMemoryId.Value);
+            }
+            else
+            {
+                cmd.CommandText = @"
+                    SELECT COUNT(*) FROM memories 
+                    WHERE alias = @alias AND project_name = @project_name";
+                cmd.Parameters.AddWithValue("@alias", alias);
+            }
+            cmd.Parameters.AddWithValue("@project_name", _projectName);
+            
+            var count = Convert.ToInt32(await cmd.ExecuteScalarAsync());
+            return count > 0;
+        }
+        
         public async Task<bool> DeleteMemoryAsync(int memoryId)
         {
             if (_connection == null) throw new InvalidOperationException("Database not initialized");
@@ -287,6 +376,33 @@ namespace CSharpMcpServer.Storage
         }
         
         // Vector storage methods
+        public async Task<bool> DeleteVectorAsync(int memoryId)
+        {
+            if (_connection == null) throw new InvalidOperationException("Database not initialized");
+            
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = @"
+                DELETE FROM memory_vectors 
+                WHERE memory_id = @memory_id AND project_name = @project_name";
+            
+            cmd.Parameters.AddWithValue("@memory_id", memoryId);
+            cmd.Parameters.AddWithValue("@project_name", _projectName);
+            
+            var rowsAffected = await cmd.ExecuteNonQueryAsync();
+            return rowsAffected > 0;
+        }
+        
+        public async Task UpdateVectorAsync(MemoryVectorEntry vector)
+        {
+            if (_connection == null) throw new InvalidOperationException("Database not initialized");
+            
+            // Delete existing vector first
+            await DeleteVectorAsync(vector.MemoryId);
+            
+            // Insert new vector
+            await StoreVectorAsync(vector);
+        }
+        
         public async Task StoreVectorAsync(MemoryVectorEntry vector)
         {
             if (_connection == null) throw new InvalidOperationException("Database not initialized");
@@ -375,21 +491,6 @@ namespace CSharpMcpServer.Storage
             }
             
             return vectors;
-        }
-        
-        public async Task DeleteVectorAsync(int memoryId)
-        {
-            if (_connection == null) throw new InvalidOperationException("Database not initialized");
-            
-            using var cmd = _connection.CreateCommand();
-            cmd.CommandText = @"
-                DELETE FROM memory_vectors 
-                WHERE memory_id = @memory_id AND project_name = @project_name";
-            
-            cmd.Parameters.AddWithValue("@memory_id", memoryId);
-            cmd.Parameters.AddWithValue("@project_name", _projectName);
-            
-            await cmd.ExecuteNonQueryAsync();
         }
         
         private async Task UpdateParentChildListAsync(int parentId, int childId, bool add)

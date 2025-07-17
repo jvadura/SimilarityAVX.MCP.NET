@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Numerics.Tensors;
+using System.Threading;
 using System.Threading.Tasks;
 using CSharpMcpServer.Models;
 
@@ -24,6 +26,10 @@ namespace CSharpMcpServer.Storage
         private int _capacity;
         private int _activeCount;
         private readonly int _maxDegreeOfParallelism;
+        
+        // Debugging and process tracking
+        private static readonly int _ownerProcessId = Process.GetCurrentProcess().Id;
+        private static readonly string _machineName = Environment.MachineName;
         
         public int VectorCount => _activeCount;
         
@@ -95,6 +101,12 @@ namespace CSharpMcpServer.Storage
         {
             lock (_writeLock)
             {
+                // Dimension validation
+                if (_dimension > 0 && vector.Embedding.Length != _dimension)
+                {
+                    throw new InvalidOperationException($"Dimension mismatch: Expected {_dimension}, got {vector.Embedding.Length} for memory {vector.MemoryId}");
+                }
+                
                 int newIndex;
                 
                 // Try to reuse a deleted slot first
@@ -107,10 +119,13 @@ namespace CSharpMcpServer.Storage
                 else
                 {
                     newIndex = _vectors.Count;
-                    _vectors.Add(vector);
                     
-                    // Reallocate if needed
+                    // CRITICAL FIX: Ensure capacity BEFORE adding to _vectors list
+                    // This prevents _vectors.Count from being ahead of actual array capacity
                     EnsureCapacity(newIndex + 1);
+                    
+                    // Now safe to add the vector
+                    _vectors.Add(vector);
                 }
                 
                 _memoryIdToIndex[vector.MemoryId] = newIndex;
@@ -118,6 +133,24 @@ namespace CSharpMcpServer.Storage
                 
                 // Copy to columnar storage
                 Array.Copy(vector.Embedding, 0, _allVectorsFloat32!, newIndex * _dimension, _dimension);
+            }
+        }
+        
+        /// <summary>
+        /// Update an existing vector
+        /// </summary>
+        public void UpdateVector(int memoryId, float[] newEmbedding)
+        {
+            lock (_writeLock)
+            {
+                if (_memoryIdToIndex.TryGetValue(memoryId, out var index))
+                {
+                    // Update the vector in list
+                    _vectors[index].Embedding = newEmbedding;
+                    
+                    // Update columnar storage
+                    Array.Copy(newEmbedding, 0, _allVectorsFloat32!, index * _dimension, _dimension);
+                }
             }
         }
         
@@ -235,13 +268,27 @@ namespace CSharpMcpServer.Storage
         {
             if (_capacity >= requiredCapacity) return;
             
+            // Validate state consistency before capacity expansion
+            int sourceArrayLength = _allVectorsFloat32?.Length ?? 0;
+            int expectedCopyLength = _vectors.Count * _dimension;
+            
+            // Critical validation: ensure we don't exceed source array bounds
+            if (_allVectorsFloat32 != null && sourceArrayLength < expectedCopyLength)
+            {
+                Console.WriteLine($"🚨 INTERNAL ERROR: Array copy bounds violation prevented");
+                Console.WriteLine($"   This should not happen with the fixed AddVector logic");
+                Console.WriteLine($"   Source: {sourceArrayLength}, Expected: {expectedCopyLength}");
+                throw new InvalidOperationException($"Internal state corruption: {sourceArrayLength} < {expectedCopyLength}");
+            }
+            
             // Grow by 50% (more conservative than doubling)
             _capacity = Math.Max(requiredCapacity, (int)(_capacity * 1.5));
             var newArray = new float[_capacity * _dimension];
             
             if (_allVectorsFloat32 != null)
             {
-                Array.Copy(_allVectorsFloat32, newArray, _vectors.Count * _dimension);
+                // Safe copy: we've already validated bounds above
+                Array.Copy(_allVectorsFloat32, newArray, expectedCopyLength);
             }
             
             _allVectorsFloat32 = newArray;
@@ -302,5 +349,6 @@ namespace CSharpMcpServer.Storage
                 SearchMethod = "TensorPrimitives (Parallel)"
             };
         }
+        
     }
 }

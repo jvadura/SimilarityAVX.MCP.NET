@@ -393,6 +393,28 @@ await RunMemoryAdd(args[1], args[2], content, args.Length > 4 ? args[4] : null);
                 await RunMemoryTree(args[1], treeRootIdOrAlias, treeMaxDepth, treeIncludeContent);
                 break;
                 
+            case "memory-export":
+                if (args.Length < 2)
+                {
+                    Console.Error.WriteLine("Usage: memory-export <project> [rootMemoryIdOrAlias] [format] [outputFile]");
+                    Console.Error.WriteLine("Formats: markdown (default), json, yaml");
+                    return 1;
+                }
+                var exportRootIdOrAlias = args.Length > 2 ? args[2] : null;
+                var exportFormat = args.Length > 3 ? args[3] : "markdown";
+                var exportOutputFile = args.Length > 4 ? args[4] : null;
+                await RunMemoryExport(args[1], exportRootIdOrAlias, exportFormat, exportOutputFile);
+                break;
+                
+            case "memory-update":
+                if (args.Length < 3)
+                {
+                    Console.Error.WriteLine("Usage: memory-update <project> <memoryIdOrAlias> [--name \"new name\"] [--content \"new content\"] [--tags \"tag1,tag2\"]");
+                    return 1;
+                }
+                await RunMemoryUpdate(args[1], args[2], args.Skip(3).ToArray());
+                break;
+                
             default:
                 Console.Error.WriteLine($"Unknown command: {command}");
                 ShowUsage();
@@ -458,6 +480,8 @@ void ShowUsage()
     Console.WriteLine("  dotnet run -- memory-stats <project>                                  # Memory statistics");
     Console.WriteLine("  dotnet run -- memory-import-markdown <project> <markdownFile> [tags] [parentId]  # Import markdown hierarchy");
     Console.WriteLine("  dotnet run -- memory-tree <project> [rootIdOrAlias] [maxDepth] [includeContent]  # Display memory tree");
+    Console.WriteLine("  dotnet run -- memory-export <project> [rootIdOrAlias] [format] [outputFile]       # Export memories");
+    Console.WriteLine("  dotnet run -- memory-update <project> <memoryIdOrAlias> [--name \"...\"] [--content \"...\"] [--tags \"...\"]  # Update memory");
     Console.WriteLine();
     Console.WriteLine("Environment variables:");
     Console.WriteLine("  EMBEDDING_API_KEY      (required) API key for embedding service");
@@ -909,6 +933,145 @@ async Task RunMemoryTree(string project, string? rootIdOrAlias, int maxDepth, bo
     catch (Exception ex)
     {
         Console.Error.WriteLine($"Error getting memory tree: {ex.Message}");
+    }
+}
+
+async Task RunMemoryUpdate(string project, string memoryIdOrAlias, string[] updateArgs)
+{
+    var config = Configuration.Load();
+    using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
+    
+    // Parse command line arguments
+    string? newName = null;
+    string? newContent = null;
+    string? newTags = null;
+    
+    for (int i = 0; i < updateArgs.Length; i++)
+    {
+        if (updateArgs[i] == "--name" && i + 1 < updateArgs.Length)
+        {
+            newName = updateArgs[++i];
+        }
+        else if (updateArgs[i] == "--content" && i + 1 < updateArgs.Length)
+        {
+            newContent = updateArgs[++i];
+        }
+        else if (updateArgs[i] == "--tags" && i + 1 < updateArgs.Length)
+        {
+            newTags = updateArgs[++i];
+        }
+    }
+    
+    if (newName == null && newContent == null && newTags == null)
+    {
+        Console.Error.WriteLine("Error: At least one of --name, --content, or --tags must be specified");
+        return;
+    }
+    
+    // Get the existing memory first to show what's changing
+    var existingMemory = await indexer.GetMemoryByIdOrAliasAsync(memoryIdOrAlias);
+    if (existingMemory == null)
+    {
+        Console.Error.WriteLine($"Memory '{memoryIdOrAlias}' not found in project '{project}'");
+        return;
+    }
+    
+    Console.WriteLine($"Updating memory '{existingMemory.MemoryName}' (ID: {existingMemory.Id})...");
+    
+    // Parse tags if provided
+    List<string>? tagList = null;
+    if (newTags != null)
+    {
+        tagList = newTags.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+    }
+    
+    // Update the memory
+    var updatedMemory = await indexer.UpdateMemoryAsync(existingMemory.Id, newName, newContent, tagList);
+    
+    if (updatedMemory != null)
+    {
+        Console.WriteLine($"✓ Memory updated successfully");
+        
+        // Show what changed
+        if (newName != null && newName != existingMemory.MemoryName)
+        {
+            Console.WriteLine($"  Name: {existingMemory.MemoryName} → {updatedMemory.MemoryName}");
+            if (updatedMemory.Alias != existingMemory.Alias)
+            {
+                Console.WriteLine($"  Alias: @{existingMemory.Alias} → @{updatedMemory.Alias}");
+            }
+        }
+        
+        if (newContent != null && newContent != existingMemory.FullDocumentText)
+        {
+            Console.WriteLine($"  Content: Updated ({existingMemory.LinesCount} → {updatedMemory.LinesCount} lines, {existingMemory.SizeInKBytes:F2} → {updatedMemory.SizeInKBytes:F2} KB)");
+        }
+        
+        if (tagList != null && !tagList.SequenceEqual(existingMemory.Tags))
+        {
+            Console.WriteLine($"  Tags: {string.Join(", ", existingMemory.Tags)} → {string.Join(", ", updatedMemory.Tags)}");
+        }
+    }
+    else
+    {
+        Console.Error.WriteLine("Failed to update memory");
+    }
+}
+
+async Task RunMemoryExport(string project, string? rootIdOrAlias, string format, string? outputFile)
+{
+    var config = Configuration.Load();
+    var logger = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<CSharpMcpServer.Protocol.MemoryTools>();
+    var tools = new CSharpMcpServer.Protocol.MemoryTools(config, logger);
+    
+    try
+    {
+        // Handle empty string as null for rootIdOrAlias
+        if (string.IsNullOrEmpty(rootIdOrAlias))
+            rootIdOrAlias = null;
+            
+        Console.WriteLine($"Exporting memories from '{project}' as {format}...");
+        
+        var result = await tools.ExportMemoryTree(project, rootIdOrAlias, format, true, 10, true);
+        
+        dynamic dynResult = result;
+        if (dynResult.status == "success")
+        {
+            string content = dynResult.content;
+            
+            if (!string.IsNullOrEmpty(outputFile))
+            {
+                // Write to file
+                await File.WriteAllTextAsync(outputFile, content);
+                Console.WriteLine($"✓ Export successful!");
+                Console.WriteLine($"  Format: {dynResult.format}");
+                Console.WriteLine($"  Root memories: {dynResult.rootCount}");
+                Console.WriteLine($"  Total exported: {dynResult.totalExported}");
+                Console.WriteLine($"  File size: {dynResult.contentLength:N0} bytes");
+                Console.WriteLine($"  Output file: {outputFile}");
+            }
+            else
+            {
+                // Output to console
+                Console.WriteLine($"=== Memory Export ({dynResult.format}) ===");
+                Console.WriteLine($"Root memories: {dynResult.rootCount}");
+                Console.WriteLine($"Total exported: {dynResult.totalExported}");
+                Console.WriteLine($"Content length: {dynResult.contentLength:N0} bytes\n");
+                Console.WriteLine(content);
+            }
+        }
+        else if (dynResult.status == "not_found")
+        {
+            Console.Error.WriteLine($"Error: {dynResult.message}");
+        }
+        else
+        {
+            Console.Error.WriteLine($"Error: {dynResult.message}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Error exporting memory tree: {ex.Message}");
     }
 }
 

@@ -79,6 +79,85 @@ namespace CSharpMcpServer.Protocol
         }
         
         /// <summary>
+        /// Update an existing memory
+        /// </summary>
+        [McpServerTool]
+        [Description("Update an existing memory's name, content, or tags. Accepts memory ID or alias. When content is updated, the embedding is regenerated. Returns the updated memory with new metadata.")]
+        public async Task<object> UpdateMemory(
+            [Description("Project name")] string project,
+            [Description("The unique ID or alias of the memory to update (e.g., 42 or 'api-design')")] string memoryIdOrAlias,
+            [Description("New memory name (null to keep existing)")] string? newName = null,
+            [Description("New content (null to keep existing)")] string? newContent = null,
+            [Description("New tags comma-separated (null to keep existing)")] string? newTags = null)
+        {
+            try
+            {
+                var indexer = GetOrCreateMemoryIndexer(project);
+                
+                // First get the memory to check if it exists and get its ID
+                var memory = await indexer.GetMemoryByIdOrAliasAsync(memoryIdOrAlias);
+                if (memory == null)
+                {
+                    return new
+                    {
+                        status = "not_found",
+                        message = $"Memory '{memoryIdOrAlias}' not found in project '{project}'"
+                    };
+                }
+                
+                // Parse tags if provided
+                List<string>? tagList = null;
+                if (newTags != null)
+                {
+                    tagList = newTags.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+                }
+                
+                // Update the memory
+                var updatedMemory = await indexer.UpdateMemoryAsync(memory.Id, newName, newContent, tagList);
+                
+                if (updatedMemory == null)
+                {
+                    return new
+                    {
+                        status = "error",
+                        message = "Failed to update memory"
+                    };
+                }
+                
+                return new
+                {
+                    status = "success",
+                    message = $"Memory '{memoryIdOrAlias}' updated successfully",
+                    memory = new
+                    {
+                        id = updatedMemory.Id,
+                        name = updatedMemory.MemoryName,
+                        alias = updatedMemory.Alias,
+                        tags = updatedMemory.Tags,
+                        metadata = new
+                        {
+                            linesCount = updatedMemory.LinesCount,
+                            sizeKB = Math.Round(updatedMemory.SizeInKBytes, 2),
+                            timestamp = updatedMemory.Timestamp.ToString("O")
+                        }
+                    },
+                    changes = new
+                    {
+                        nameChanged = newName != null && newName != memory.MemoryName,
+                        contentChanged = newContent != null && newContent != memory.FullDocumentText,
+                        tagsChanged = tagList != null && !tagList.SequenceEqual(memory.Tags),
+                        aliasChanged = updatedMemory.Alias != memory.Alias
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating memory");
+                return new { status = "error", message = ex.Message };
+            }
+        }
+        
+        /// <summary>
         /// Delete a memory from the system
         /// </summary>
         [McpServerTool]
@@ -806,6 +885,415 @@ namespace CSharpMcpServer.Protocol
             }
             
             visitedIds.Remove(memory.Id); // Allow revisiting in different branches
+        }
+        
+        /// <summary>
+        /// Export memory tree as structured markdown
+        /// </summary>
+        [McpServerTool]
+        [Description("Export memory tree as structured markdown or other formats. Converts memory hierarchies into documentation with proper formatting. Supports markdown, JSON, and YAML formats. Preserves hierarchy through header levels in markdown or nested structures in JSON/YAML.")]
+        public async Task<object> ExportMemoryTree(
+            [Description("Project name")] string project,
+            [Description("Root memory ID or alias (null = export all)")] string? rootMemoryIdOrAlias = null,
+            [Description("Output format: markdown, json, or yaml (default: markdown)")] string format = "markdown",
+            [Description("Include full memory content (default: true)")] bool includeContent = true,
+            [Description("Maximum depth to export (default: 10)")] int maxDepth = 10,
+            [Description("Include metadata (timestamps, tags) in export (default: true)")] bool includeMetadata = true)
+        {
+            try
+            {
+                var indexer = GetOrCreateMemoryIndexer(project);
+                var allMemories = await indexer.GetAllMemoriesAsync();
+                
+                if (!allMemories.Any())
+                {
+                    return new
+                    {
+                        status = "success",
+                        message = "No memories found to export",
+                        content = "",
+                        format = format
+                    };
+                }
+                
+                // Build memory lookup
+                var memoryLookup = allMemories.ToDictionary(m => m.Id);
+                
+                // Determine root memories
+                List<Memory> rootMemories;
+                if (!string.IsNullOrEmpty(rootMemoryIdOrAlias))
+                {
+                    var rootMemory = await indexer.GetMemoryByIdOrAliasAsync(rootMemoryIdOrAlias);
+                    if (rootMemory == null)
+                    {
+                        return new
+                        {
+                            status = "not_found",
+                            message = $"Memory '{rootMemoryIdOrAlias}' not found in project '{project}'"
+                        };
+                    }
+                    rootMemories = new List<Memory> { rootMemory };
+                }
+                else
+                {
+                    rootMemories = allMemories.Where(m => !m.ParentMemoryId.HasValue).ToList();
+                }
+                
+                if (!rootMemories.Any())
+                {
+                    return new
+                    {
+                        status = "success",
+                        message = "No root memories found",
+                        content = "",
+                        format = format
+                    };
+                }
+                
+                // Export based on format
+                string exportContent;
+                switch (format.ToLower())
+                {
+                    case "json":
+                        exportContent = ExportAsJson(rootMemories, memoryLookup, maxDepth, includeContent, includeMetadata);
+                        break;
+                    case "yaml":
+                        exportContent = ExportAsYaml(rootMemories, memoryLookup, maxDepth, includeContent, includeMetadata);
+                        break;
+                    case "markdown":
+                    default:
+                        exportContent = ExportAsMarkdown(rootMemories, memoryLookup, maxDepth, includeContent, includeMetadata);
+                        break;
+                }
+                
+                return new
+                {
+                    status = "success",
+                    format = format.ToLower(),
+                    rootCount = rootMemories.Count,
+                    totalExported = CountExportedMemories(rootMemories, memoryLookup, maxDepth),
+                    contentLength = exportContent.Length,
+                    content = exportContent
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error exporting memory tree");
+                return new { status = "error", message = ex.Message };
+            }
+        }
+        
+        /// <summary>
+        /// Export memories as markdown document
+        /// </summary>
+        private string ExportAsMarkdown(List<Memory> rootMemories, Dictionary<int, Memory> memoryLookup, 
+                                       int maxDepth, bool includeContent, bool includeMetadata)
+        {
+            var builder = new System.Text.StringBuilder();
+            var visitedIds = new HashSet<int>();
+            
+            foreach (var root in rootMemories)
+            {
+                ExportMarkdownNode(builder, root, memoryLookup, visitedIds, 1, maxDepth, includeContent, includeMetadata);
+                builder.AppendLine(); // Empty line between root trees
+            }
+            
+            return builder.ToString().TrimEnd();
+        }
+        
+        /// <summary>
+        /// Recursively export a memory node as markdown
+        /// </summary>
+        private void ExportMarkdownNode(System.Text.StringBuilder builder, Memory memory, 
+                                       Dictionary<int, Memory> memoryLookup, HashSet<int> visitedIds,
+                                       int headerLevel, int maxDepth, bool includeContent, bool includeMetadata)
+        {
+            // Prevent circular references
+            if (visitedIds.Contains(memory.Id))
+            {
+                builder.AppendLine($"{new string('#', headerLevel)} [Circular Reference: {memory.MemoryName}]");
+                return;
+            }
+            
+            visitedIds.Add(memory.Id);
+            
+            // Write header
+            var headerPrefix = new string('#', Math.Min(headerLevel, 6)); // Markdown supports up to 6 levels
+            builder.AppendLine($"{headerPrefix} {memory.MemoryName}");
+            builder.AppendLine();
+            
+            // Add metadata if requested
+            if (includeMetadata)
+            {
+                var metadata = new List<string>();
+                if (!string.IsNullOrEmpty(memory.Alias))
+                    metadata.Add($"Alias: @{memory.Alias}");
+                if (memory.Tags.Any())
+                    metadata.Add($"Tags: {string.Join(", ", memory.Tags)}");
+                metadata.Add($"Created: {memory.Timestamp:yyyy-MM-dd HH:mm:ss} UTC");
+                metadata.Add($"Size: {memory.SizeInKBytes:F2} KB");
+                
+                if (metadata.Any())
+                {
+                    builder.AppendLine($"*{string.Join(" | ", metadata)}*");
+                    builder.AppendLine();
+                }
+            }
+            
+            // Add content if requested
+            if (includeContent && !string.IsNullOrWhiteSpace(memory.FullDocumentText))
+            {
+                builder.AppendLine(memory.FullDocumentText);
+                builder.AppendLine();
+            }
+            
+            // Check depth limit
+            if (headerLevel >= maxDepth)
+            {
+                if (memory.ChildMemoryIds.Any())
+                {
+                    builder.AppendLine($"*...{memory.ChildMemoryIds.Count} more child memories not shown (depth limit reached)*");
+                    builder.AppendLine();
+                }
+                visitedIds.Remove(memory.Id);
+                return;
+            }
+            
+            // Process children
+            if (memory.ChildMemoryIds.Any())
+            {
+                var children = memory.ChildMemoryIds
+                    .Where(id => memoryLookup.ContainsKey(id))
+                    .Select(id => memoryLookup[id])
+                    .OrderBy(m => m.MemoryName)
+                    .ToList();
+                
+                foreach (var child in children)
+                {
+                    ExportMarkdownNode(builder, child, memoryLookup, visitedIds, 
+                                     headerLevel + 1, maxDepth, includeContent, includeMetadata);
+                }
+            }
+            
+            visitedIds.Remove(memory.Id);
+        }
+        
+        /// <summary>
+        /// Export memories as JSON
+        /// </summary>
+        private string ExportAsJson(List<Memory> rootMemories, Dictionary<int, Memory> memoryLookup,
+                                   int maxDepth, bool includeContent, bool includeMetadata)
+        {
+            var visitedIds = new HashSet<int>();
+            var roots = rootMemories.Select(root => 
+                ExportJsonNode(root, memoryLookup, visitedIds, 0, maxDepth, includeContent, includeMetadata)
+            ).ToList();
+            
+            var result = new
+            {
+                exportDate = DateTime.UtcNow.ToString("O"),
+                totalMemories = roots.Count,
+                memories = roots
+            };
+            
+            return System.Text.Json.JsonSerializer.Serialize(result, new System.Text.Json.JsonSerializerOptions 
+            { 
+                WriteIndented = true,
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+            });
+        }
+        
+        /// <summary>
+        /// Recursively export a memory node as JSON object
+        /// </summary>
+        private object ExportJsonNode(Memory memory, Dictionary<int, Memory> memoryLookup, 
+                                     HashSet<int> visitedIds, int currentDepth, int maxDepth,
+                                     bool includeContent, bool includeMetadata)
+        {
+            if (visitedIds.Contains(memory.Id))
+            {
+                return new { circularReference = true, id = memory.Id, name = memory.MemoryName };
+            }
+            
+            visitedIds.Add(memory.Id);
+            
+            var node = new Dictionary<string, object>
+            {
+                ["id"] = memory.Id,
+                ["name"] = memory.MemoryName
+            };
+            
+            if (!string.IsNullOrEmpty(memory.Alias))
+                node["alias"] = memory.Alias;
+            
+            if (includeMetadata)
+            {
+                node["tags"] = memory.Tags;
+                node["timestamp"] = memory.Timestamp.ToString("O");
+                node["sizeKB"] = Math.Round(memory.SizeInKBytes, 2);
+                node["lines"] = memory.LinesCount;
+            }
+            
+            if (includeContent)
+                node["content"] = memory.FullDocumentText;
+            
+            if (currentDepth < maxDepth && memory.ChildMemoryIds.Any())
+            {
+                var children = memory.ChildMemoryIds
+                    .Where(id => memoryLookup.ContainsKey(id))
+                    .Select(id => memoryLookup[id])
+                    .OrderBy(m => m.MemoryName)
+                    .Select(child => ExportJsonNode(child, memoryLookup, visitedIds, 
+                                                   currentDepth + 1, maxDepth, includeContent, includeMetadata))
+                    .ToList();
+                
+                if (children.Any())
+                    node["children"] = children;
+            }
+            else if (memory.ChildMemoryIds.Any())
+            {
+                node["childrenOmitted"] = memory.ChildMemoryIds.Count;
+            }
+            
+            visitedIds.Remove(memory.Id);
+            return node;
+        }
+        
+        /// <summary>
+        /// Export memories as YAML
+        /// </summary>
+        private string ExportAsYaml(List<Memory> rootMemories, Dictionary<int, Memory> memoryLookup,
+                                   int maxDepth, bool includeContent, bool includeMetadata)
+        {
+            var builder = new System.Text.StringBuilder();
+            builder.AppendLine("# Memory Export");
+            builder.AppendLine($"exportDate: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+            builder.AppendLine($"totalMemories: {rootMemories.Count}");
+            builder.AppendLine("memories:");
+            
+            var visitedIds = new HashSet<int>();
+            foreach (var root in rootMemories)
+            {
+                ExportYamlNode(builder, root, memoryLookup, visitedIds, 1, maxDepth, includeContent, includeMetadata);
+            }
+            
+            return builder.ToString();
+        }
+        
+        /// <summary>
+        /// Recursively export a memory node as YAML
+        /// </summary>
+        private void ExportYamlNode(System.Text.StringBuilder builder, Memory memory,
+                                   Dictionary<int, Memory> memoryLookup, HashSet<int> visitedIds,
+                                   int indentLevel, int maxDepth, bool includeContent, bool includeMetadata)
+        {
+            var indent = new string(' ', indentLevel * 2);
+            
+            if (visitedIds.Contains(memory.Id))
+            {
+                builder.AppendLine($"{indent}- circularReference: true");
+                builder.AppendLine($"{indent}  id: {memory.Id}");
+                builder.AppendLine($"{indent}  name: {memory.MemoryName}");
+                return;
+            }
+            
+            visitedIds.Add(memory.Id);
+            
+            builder.AppendLine($"{indent}- id: {memory.Id}");
+            builder.AppendLine($"{indent}  name: {memory.MemoryName}");
+            
+            if (!string.IsNullOrEmpty(memory.Alias))
+                builder.AppendLine($"{indent}  alias: {memory.Alias}");
+            
+            if (includeMetadata)
+            {
+                if (memory.Tags.Any())
+                {
+                    builder.AppendLine($"{indent}  tags:");
+                    foreach (var tag in memory.Tags)
+                        builder.AppendLine($"{indent}    - {tag}");
+                }
+                builder.AppendLine($"{indent}  timestamp: {memory.Timestamp:yyyy-MM-dd HH:mm:ss} UTC");
+                builder.AppendLine($"{indent}  sizeKB: {memory.SizeInKBytes:F2}");
+                builder.AppendLine($"{indent}  lines: {memory.LinesCount}");
+            }
+            
+            if (includeContent && !string.IsNullOrWhiteSpace(memory.FullDocumentText))
+            {
+                builder.AppendLine($"{indent}  content: |");
+                var contentLines = memory.FullDocumentText.Split('\n');
+                foreach (var line in contentLines)
+                {
+                    builder.AppendLine($"{indent}    {line}");
+                }
+            }
+            
+            if (indentLevel < maxDepth && memory.ChildMemoryIds.Any())
+            {
+                var children = memory.ChildMemoryIds
+                    .Where(id => memoryLookup.ContainsKey(id))
+                    .Select(id => memoryLookup[id])
+                    .OrderBy(m => m.MemoryName)
+                    .ToList();
+                
+                if (children.Any())
+                {
+                    builder.AppendLine($"{indent}  children:");
+                    foreach (var child in children)
+                    {
+                        ExportYamlNode(builder, child, memoryLookup, visitedIds,
+                                     indentLevel + 2, maxDepth, includeContent, includeMetadata);
+                    }
+                }
+            }
+            else if (memory.ChildMemoryIds.Any())
+            {
+                builder.AppendLine($"{indent}  childrenOmitted: {memory.ChildMemoryIds.Count}");
+            }
+            
+            visitedIds.Remove(memory.Id);
+        }
+        
+        /// <summary>
+        /// Count total memories that will be exported
+        /// </summary>
+        private int CountExportedMemories(List<Memory> rootMemories, Dictionary<int, Memory> memoryLookup, int maxDepth)
+        {
+            var visitedIds = new HashSet<int>();
+            var count = 0;
+            
+            foreach (var root in rootMemories)
+            {
+                count += CountMemoryNodes(root, memoryLookup, visitedIds, 0, maxDepth);
+            }
+            
+            return count;
+        }
+        
+        /// <summary>
+        /// Recursively count memory nodes
+        /// </summary>
+        private int CountMemoryNodes(Memory memory, Dictionary<int, Memory> memoryLookup,
+                                    HashSet<int> visitedIds, int currentDepth, int maxDepth)
+        {
+            if (visitedIds.Contains(memory.Id) || currentDepth > maxDepth)
+                return 0;
+            
+            visitedIds.Add(memory.Id);
+            var count = 1;
+            
+            if (currentDepth < maxDepth)
+            {
+                foreach (var childId in memory.ChildMemoryIds)
+                {
+                    if (memoryLookup.TryGetValue(childId, out var child))
+                    {
+                        count += CountMemoryNodes(child, memoryLookup, visitedIds, currentDepth + 1, maxDepth);
+                    }
+                }
+            }
+            
+            return count;
         }
         
         /// <summary>

@@ -115,6 +115,57 @@ namespace CSharpMcpServer.Core
         }
         
         /// <summary>
+        /// Update an existing memory
+        /// </summary>
+        public async Task<Memory?> UpdateMemoryAsync(int memoryId, string? newName, string? newContent, List<string>? newTags)
+        {
+            // Get the existing memory first
+            var existingMemory = await _storage.GetMemoryAsync(memoryId);
+            if (existingMemory == null)
+                return null;
+            
+            // Update in storage
+            var updated = await _storage.UpdateMemoryAsync(memoryId, newName, newContent, newTags);
+            if (!updated)
+                return null;
+            
+            // If content changed, update the embedding
+            if (newContent != null && newContent != existingMemory.FullDocumentText)
+            {
+                // Generate new embedding
+                var embeddingBytes = await _embeddingClient.GetEmbeddingAsync(newContent);
+                
+                // Convert bytes to float array
+                var embedding = new float[embeddingBytes.Length / sizeof(float)];
+                Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
+                
+                // Update vector in store
+                _vectorStore.UpdateVector(memoryId, embedding);
+                
+                // Update vector in database
+                var vectorEntry = new MemoryVectorEntry
+                {
+                    MemoryId = memoryId,
+                    ProjectName = _projectName,
+                    Content = newContent,
+                    Embedding = embedding,
+                    Precision = VectorPrecision.Float32
+                };
+                
+                await _storage.UpdateVectorAsync(vectorEntry);
+                
+                Console.WriteLine($"[MemoryIndexer] Updated memory {memoryId} with new embedding (dimension: {embedding.Length})");
+            }
+            else if (newName != null || newTags != null)
+            {
+                Console.WriteLine($"[MemoryIndexer] Updated memory {memoryId} metadata");
+            }
+            
+            // Return the updated memory
+            return await _storage.GetMemoryAsync(memoryId);
+        }
+        
+        /// <summary>
         /// Delete a memory and its vectors
         /// </summary>
         public async Task<bool> DeleteMemoryAsync(int memoryId)
