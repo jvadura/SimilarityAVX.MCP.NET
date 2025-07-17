@@ -218,15 +218,19 @@ namespace CSharpMcpServer.Protocol
         }
         
         /// <summary>
-        /// Search memories using semantic similarity
+        /// Search memories using semantic similarity with advanced filtering
         /// </summary>
         [McpServerTool]
-        [Description("Search memories using natural language queries. Returns top matches with similarity scores (0.0-1.0, higher = more similar), snippets, and metadata. Typical useful results have scores > 0.3. Results are sorted by score (highest first). Great for finding related concepts, past decisions, or documented knowledge.")]
+        [Description("Search memories using natural language queries with advanced filtering options. Returns top matches with similarity scores (0.0-1.0, higher = more similar), snippets, and metadata. Supports filtering by tags, date ranges, parent/child relationships, and score thresholds. Results are sorted by score (highest first).")]
         public async Task<object> SearchMemories(
             [Description("Project name to search within")] string project,
             [Description("Natural language search query (e.g., 'authentication flow', 'API design decisions')")] string query,
             [Description("Number of top results to return (default: 3)")] int topK = 3,
-            [Description("Number of lines to include in each snippet (default: 10)")] int snippetLines = 10)
+            [Description("Number of lines to include in each snippet (default: 10)")] int snippetLines = 10,
+            [Description("Filter by tags (comma-separated, e.g., 'architecture,decisions')")] string? filterTags = null,
+            [Description("Only show memories older than this many days")] int? olderThanDays = null,
+            [Description("Filter by parent/child status: true=only parents, false=only leaf memories, null=all")] bool? hasChildren = null,
+            [Description("Minimum similarity score threshold (0.0-1.0, default: 0.0)")] float minScore = 0.0f)
         {
             try
             {
@@ -237,7 +241,12 @@ namespace CSharpMcpServer.Protocol
                     TopK = topK,
                     SnippetLineCount = snippetLines,
                     IncludeMetadata = true,
-                    IncludeGraphRelations = false // Keep simple for now
+                    IncludeGraphRelations = false,
+                    FilterTags = string.IsNullOrEmpty(filterTags) ? null : 
+                                filterTags.Split(',').Select(t => t.Trim()).ToList(),
+                    OlderThanDays = olderThanDays,
+                    HasChildren = hasChildren,
+                    MinScore = minScore
                 };
                 
                 var results = await indexer.SearchMemoriesAsync(query, config);

@@ -76,6 +76,12 @@ namespace CSharpMcpServer.Models
         public int SnippetLineCount { get; set; } = 10;
         public bool IncludeMetadata { get; set; } = true;
         public bool IncludeGraphRelations { get; set; } = false;
+        
+        // Enhanced filtering options
+        public List<string>? FilterTags { get; set; }
+        public int? OlderThanDays { get; set; }
+        public bool? HasChildren { get; set; }
+        public float MinScore { get; set; } = 0.0f;
     }
     
     /// <summary>

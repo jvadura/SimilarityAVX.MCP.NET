@@ -189,9 +189,36 @@ namespace CSharpMcpServer.Core
             
             foreach (var (vector, score) in searchResults)
             {
+                // Apply score threshold filter first (most efficient)
+                if (score < config.MinScore) continue;
+                
                 // Get full memory
                 var memory = await _storage.GetMemoryAsync(vector.MemoryId);
                 if (memory == null) continue;
+                
+                // Apply tag filter
+                if (config.FilterTags != null && config.FilterTags.Any())
+                {
+                    var hasMatchingTag = config.FilterTags.Any(filterTag => 
+                        memory.Tags.Any(memoryTag => 
+                            memoryTag.Equals(filterTag, StringComparison.OrdinalIgnoreCase)));
+                    if (!hasMatchingTag) continue;
+                }
+                
+                // Apply date filter
+                if (config.OlderThanDays.HasValue)
+                {
+                    var cutoffDate = DateTime.UtcNow.AddDays(-config.OlderThanDays.Value);
+                    if (memory.Timestamp > cutoffDate) continue;
+                }
+                
+                // Apply parent/child filter
+                if (config.HasChildren.HasValue)
+                {
+                    var hasChildren = memory.ChildMemoryIds.Any();
+                    if (config.HasChildren.Value && !hasChildren) continue;
+                    if (!config.HasChildren.Value && hasChildren) continue;
+                }
                 
                 // Extract snippet (first N lines)
                 var lines = memory.FullDocumentText.Split('\n');
