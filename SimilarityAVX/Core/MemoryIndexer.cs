@@ -229,7 +229,7 @@ namespace CSharpMcpServer.Core
             config ??= new MemorySearchConfig();
             
             // Get query embedding
-            var queryEmbeddingBytes = await _embeddingClient.GetEmbeddingAsync(query);
+            var queryEmbeddingBytes = await _embeddingClient.GetQueryEmbeddingAsync(query);
             var queryEmbedding = new float[queryEmbeddingBytes.Length / sizeof(float)];
             Buffer.BlockCopy(queryEmbeddingBytes, 0, queryEmbedding, 0, queryEmbeddingBytes.Length);
             
