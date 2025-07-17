@@ -486,6 +486,232 @@ namespace CSharpMcpServer.Protocol
             }
         }
         
+        /// <summary>
+        /// Import a markdown file as a memory hierarchy
+        /// </summary>
+        [McpServerTool]
+        [Description("Import markdown file as memory hierarchy using headers. Headers (#, ##, ###, ####) create parent-child relationships. Each section becomes a memory with its content. Headers become memory names, content below headers becomes memory content.")]
+        public async Task<object> ImportMarkdownAsMemories(
+            [Description("Project name")] string project,
+            [Description("Path to markdown file")] string filePath,
+            [Description("Optional parent memory ID to attach imported hierarchy to")] int? parentMemoryId = null,
+            [Description("Tags to add to all imported memories (comma-separated)")] string? tags = null)
+        {
+            try
+            {
+                // Validate file exists
+                if (!System.IO.File.Exists(filePath))
+                {
+                    return new
+                    {
+                        status = "error",
+                        message = $"File not found: {filePath}"
+                    };
+                }
+                
+                // Read file content
+                var content = await System.IO.File.ReadAllTextAsync(filePath);
+                if (string.IsNullOrEmpty(content))
+                {
+                    return new
+                    {
+                        status = "error",
+                        message = "File is empty"
+                    };
+                }
+                
+                var indexer = GetOrCreateMemoryIndexer(project);
+                
+                // Validate parent memory if provided
+                if (parentMemoryId.HasValue)
+                {
+                    var parentMemory = await indexer.GetMemoryAsync(parentMemoryId.Value);
+                    if (parentMemory == null)
+                    {
+                        return new
+                        {
+                            status = "error",
+                            message = $"Parent memory {parentMemoryId.Value} not found"
+                        };
+                    }
+                }
+                
+                // Parse tags
+                var baseTags = string.IsNullOrEmpty(tags) ? new List<string>() : 
+                               tags.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList();
+                
+                // Add file-based tags
+                var fileName = System.IO.Path.GetFileName(filePath);
+                var fileNameTag = $"imported-from-{System.IO.Path.GetFileNameWithoutExtension(fileName)}";
+                if (!baseTags.Contains(fileNameTag, StringComparer.OrdinalIgnoreCase))
+                {
+                    baseTags.Add(fileNameTag);
+                }
+                baseTags.Add("imported-markdown");
+                
+                // Parse markdown structure
+                var sections = ParseMarkdownSections(content);
+                if (!sections.Any())
+                {
+                    return new
+                    {
+                        status = "error",
+                        message = "No headers found in markdown file"
+                    };
+                }
+                
+                // Import sections as memory hierarchy
+                var importedMemories = new List<(Memory memory, int level)>();
+                var levelToMemoryId = new Dictionary<int, int>();
+                
+                if (parentMemoryId.HasValue)
+                {
+                    // Set the provided parent as level 0
+                    levelToMemoryId[0] = parentMemoryId.Value;
+                }
+                
+                foreach (var section in sections)
+                {
+                    // Determine parent ID based on header level
+                    int? sectionParentId = null;
+                    
+                    // Look for the closest parent level
+                    for (int parentLevel = section.Level - 1; parentLevel >= 0; parentLevel--)
+                    {
+                        if (levelToMemoryId.ContainsKey(parentLevel))
+                        {
+                            sectionParentId = levelToMemoryId[parentLevel];
+                            break;
+                        }
+                    }
+                    
+                    // Create memory for this section
+                    var memory = new Memory
+                    {
+                        ProjectName = project,
+                        MemoryName = section.Title,
+                        FullDocumentText = section.Content,
+                        Tags = new List<string>(baseTags),
+                        ParentMemoryId = sectionParentId
+                    };
+                    
+                    // Add level-specific tag
+                    memory.Tags.Add($"level-{section.Level}");
+                    
+                    // Store the memory
+                    var stored = await indexer.AddMemoryAsync(memory);
+                    
+                    // Track this memory as potential parent for deeper levels
+                    levelToMemoryId[section.Level] = stored.Id;
+                    
+                    importedMemories.Add((stored, section.Level));
+                }
+                
+                // Generate import summary
+                var summary = new
+                {
+                    status = "success",
+                    message = $"Successfully imported {importedMemories.Count} memories from markdown file",
+                    fileName = fileName,
+                    importedCount = importedMemories.Count,
+                    hierarchy = importedMemories.Select(im => new
+                    {
+                        id = im.memory.Id,
+                        alias = im.memory.Alias,
+                        name = im.memory.MemoryName,
+                        level = im.level,
+                        parentId = im.memory.ParentMemoryId,
+                        sizeKB = Math.Round(im.memory.SizeInKBytes, 2),
+                        lines = im.memory.LinesCount
+                    }).ToList(),
+                    totalSizeKB = Math.Round(importedMemories.Sum(im => im.memory.SizeInKBytes), 2),
+                    tags = baseTags
+                };
+                
+                return summary;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error importing markdown file");
+                return new { status = "error", message = ex.Message };
+            }
+        }
+        
+        /// <summary>
+        /// Parse markdown content into sections based on headers
+        /// </summary>
+        private List<MarkdownSection> ParseMarkdownSections(string content)
+        {
+            var sections = new List<MarkdownSection>();
+            var lines = content.Split('\n');
+            
+            MarkdownSection? currentSection = null;
+            var contentBuilder = new System.Text.StringBuilder();
+            
+            for (int i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i];
+                var trimmedLine = line.TrimStart();
+                
+                // Check if this is a header line
+                if (trimmedLine.StartsWith("#"))
+                {
+                    // Save previous section if exists
+                    if (currentSection != null)
+                    {
+                        currentSection.Content = contentBuilder.ToString().Trim();
+                        if (!string.IsNullOrWhiteSpace(currentSection.Content))
+                        {
+                            sections.Add(currentSection);
+                        }
+                    }
+                    
+                    // Parse header level and title
+                    var headerMatch = System.Text.RegularExpressions.Regex.Match(trimmedLine, @"^(#+)\s+(.+)$");
+                    if (headerMatch.Success)
+                    {
+                        var level = headerMatch.Groups[1].Value.Length;
+                        var title = headerMatch.Groups[2].Value.Trim();
+                        
+                        currentSection = new MarkdownSection
+                        {
+                            Level = level,
+                            Title = title,
+                            Content = ""
+                        };
+                        contentBuilder.Clear();
+                    }
+                }
+                else if (currentSection != null)
+                {
+                    // Add non-header line to current section content
+                    contentBuilder.AppendLine(line);
+                }
+            }
+            
+            // Save the last section
+            if (currentSection != null)
+            {
+                currentSection.Content = contentBuilder.ToString().Trim();
+                if (!string.IsNullOrWhiteSpace(currentSection.Content))
+                {
+                    sections.Add(currentSection);
+                }
+            }
+            
+            return sections;
+        }
+        
+        /// <summary>
+        /// Represents a markdown section with header and content
+        /// </summary>
+        private class MarkdownSection
+        {
+            public int Level { get; set; }
+            public string Title { get; set; } = string.Empty;
+            public string Content { get; set; } = string.Empty;
+        }
+        
         private MemoryIndexer GetOrCreateMemoryIndexer(string project)
         {
             if (!_memoryIndexers.TryGetValue(project, out var indexer))

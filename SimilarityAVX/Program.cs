@@ -370,6 +370,17 @@ await RunMemoryAdd(args[1], args[2], content, args.Length > 4 ? args[4] : null);
                 await RunMemoryStats(args[1]);
                 break;
                 
+            case "memory-import-markdown":
+                if (args.Length < 3)
+                {
+                    Console.Error.WriteLine("Usage: memory-import-markdown <project> <markdownFile> [tags] [parentMemoryId]");
+                    return 1;
+                }
+                var importTags = args.Length > 3 ? args[3] : null;
+                var importParentIdStr = args.Length > 4 ? args[4] : null;
+                await RunMemoryImportMarkdown(args[1], args[2], importTags, importParentIdStr);
+                break;
+                
             default:
                 Console.Error.WriteLine($"Unknown command: {command}");
                 ShowUsage();
@@ -433,6 +444,7 @@ void ShowUsage()
     Console.WriteLine("  dotnet run -- memory-list <project> [tagFilter]                             # List memories");
     Console.WriteLine("  dotnet run -- memory-delete <project> <memoryIdOrAlias>                     # Delete a memory");
     Console.WriteLine("  dotnet run -- memory-stats <project>                                  # Memory statistics");
+    Console.WriteLine("  dotnet run -- memory-import-markdown <project> <markdownFile> [tags] [parentId]  # Import markdown hierarchy");
     Console.WriteLine();
     Console.WriteLine("Environment variables:");
     Console.WriteLine("  EMBEDDING_API_KEY      (required) API key for embedding service");
@@ -843,6 +855,102 @@ async Task RunMemoryAddFile(string project, string name, string filePath, string
         }
         Console.WriteLine($"  Tags: {string.Join(", ", stored.Tags)}");
         Console.WriteLine($"  Size: {stored.SizeInKBytes:F2} KB ({stored.LinesCount} lines)");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"ERROR: {ex.Message}");
+        if (ex.InnerException != null)
+        {
+            Console.Error.WriteLine($"Inner: {ex.InnerException.Message}");
+        }
+    }
+}
+
+async Task RunMemoryImportMarkdown(string project, string markdownFile, string? tags, string? parentIdStr)
+{
+    try
+    {
+        // Validate file exists
+        if (!File.Exists(markdownFile))
+        {
+            Console.Error.WriteLine($"ERROR: File not found: {markdownFile}");
+            return;
+        }
+        
+        var fileInfo = new FileInfo(markdownFile);
+        Console.WriteLine($"Importing markdown file: {markdownFile}");
+        Console.WriteLine($"File size: {fileInfo.Length:N0} bytes ({fileInfo.Length / 1024.0:F1} KB)");
+        
+        // Parse parent ID if provided
+        int? parentId = null;
+        if (!string.IsNullOrEmpty(parentIdStr))
+        {
+            if (!int.TryParse(parentIdStr, out var pid))
+            {
+                Console.Error.WriteLine($"ERROR: Invalid parent memory ID: {parentIdStr}. Memory IDs must be integers.");
+                return;
+            }
+            parentId = pid;
+        }
+        
+        // Use MCP tool functionality directly
+        var config = Configuration.Load();
+        var logger = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<CSharpMcpServer.Protocol.MemoryTools>();
+        var memoryTools = new CSharpMcpServer.Protocol.MemoryTools(config, logger);
+        
+        Console.WriteLine($"Processing markdown structure...");
+        
+        // Call the ImportMarkdownAsMemories tool
+        var result = await memoryTools.ImportMarkdownAsMemories(project, markdownFile, parentId, tags);
+        
+        // Handle the result dynamically based on its type
+        dynamic dynResult = result;
+        try
+        {
+            if (dynResult.status == "success")
+            {
+                Console.WriteLine($"\n✓ {dynResult.message}");
+                Console.WriteLine($"  Imported memories: {dynResult.importedCount}");
+                Console.WriteLine($"  Total size: {dynResult.totalSizeKB} KB");
+                
+                if (dynResult.tags != null)
+                {
+                    var tagList = new List<string>();
+                    foreach (var tag in dynResult.tags)
+                    {
+                        tagList.Add(tag.ToString());
+                    }
+                    Console.WriteLine($"  Tags applied: {string.Join(", ", tagList)}");
+                }
+                
+                // Display hierarchy
+                if (dynResult.hierarchy != null)
+                {
+                    Console.WriteLine($"\nImported hierarchy:");
+                    foreach (dynamic memory in dynResult.hierarchy)
+                    {
+                        var level = (int)memory.level;
+                        var indent = new string(' ', (level - 1) * 2);
+                        
+                        Console.WriteLine($"{indent}• [{memory.id}] {memory.name}");
+                        Console.WriteLine($"{indent}  alias: {memory.alias}");
+                        Console.WriteLine($"{indent}  size: {memory.sizeKB} KB, lines: {memory.lines}");
+                    }
+                }
+            }
+            else if (dynResult.status == "error")
+            {
+                Console.Error.WriteLine($"ERROR: {dynResult.message}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"ERROR parsing result: {ex.Message}");
+            Console.WriteLine($"Result type: {result?.GetType().FullName}");
+            Console.WriteLine($"Result: {System.Text.Json.JsonSerializer.Serialize(result)}");
+        }
+        
+        memoryTools.Dispose();
     }
     catch (Exception ex)
     {
