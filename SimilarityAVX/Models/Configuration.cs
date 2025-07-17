@@ -29,6 +29,9 @@ public class Configuration
     [JsonPropertyName("security")]
     public SecurityConfig Security { get; set; } = new();
     
+    [JsonPropertyName("memory")]
+    public MemoryConfig Memory { get; set; } = new();
+    
     /// <summary>
     /// Load configuration from JSON file with environment variable fallbacks
     /// </summary>
@@ -254,4 +257,22 @@ public class SecurityConfig
     
     [JsonPropertyName("enablePathValidation")]
     public bool EnablePathValidation { get; set; } = true;
+}
+
+public class MemoryConfig
+{
+    [JsonPropertyName("defaultTopK")]
+    public int DefaultTopK { get; set; } = 3;
+    
+    [JsonPropertyName("defaultSnippetLines")]
+    public int DefaultSnippetLines { get; set; } = 10;
+    
+    [JsonPropertyName("maxChildMemories")]
+    public int MaxChildMemories { get; set; } = 10;
+    
+    [JsonPropertyName("enableGraphRelations")]
+    public bool EnableGraphRelations { get; set; } = false;
+    
+    [JsonPropertyName("enableSessionStartSearch")]
+    public bool EnableSessionStartSearch { get; set; } = true;
 }

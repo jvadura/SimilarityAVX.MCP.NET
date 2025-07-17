@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -75,6 +76,9 @@ else
     // Add ProjectMonitor as a hosted service for automatic monitoring
     builder.Services.AddHostedService<ProjectMonitorService>();
     
+    // Add MemoryTools as singleton for disposal
+    builder.Services.AddSingleton<CSharpMcpServer.Protocol.MemoryTools>();
+    
     // Add MCP server with tools
     builder.Services.AddMcpServer()
         .WithHttpTransport()  // HTTP transport with SSE for cross-machine access
@@ -89,6 +93,10 @@ else
     {
         Console.Error.WriteLine("[MCP] Application stopping, disposing resources...");
         CSharpMcpServer.Protocol.MultiProjectCodeSearchTools.DisposeAllIndexers();
+        
+        // Dispose memory tools if they were created
+        var memoryTools = app.Services.GetService<CSharpMcpServer.Protocol.MemoryTools>();
+        memoryTools?.Dispose();
     });
     
     await app.RunAsync("http://*:5001");
@@ -282,6 +290,64 @@ async Task<int> RunConsoleMode(string[] args)
                 
                 CSharpMcpServer.Utils.BenchmarkRunner.RunBenchmark(dim, count, iter, searches);
                 break;
+            
+            // Memory commands
+            case "memory-add":
+                if (args.Length < 4)
+                {
+                    Console.Error.WriteLine("Usage: memory-add <project> <name> <content> [tags]");
+                    return 1;
+                }
+                // Replace literal \n with actual newlines
+var content = args[3].Replace("\\n", "\n");
+await RunMemoryAdd(args[1], args[2], content, args.Length > 4 ? args[4] : null);
+                break;
+                
+            case "memory-search":
+                if (args.Length < 3)
+                {
+                    Console.Error.WriteLine("Usage: memory-search <project> <query> [topK]");
+                    return 1;
+                }
+                var topK = args.Length > 3 ? int.Parse(args[3]) : 3;
+                await RunMemorySearch(args[1], args[2], topK);
+                break;
+                
+            case "memory-get":
+                if (args.Length < 3)
+                {
+                    Console.Error.WriteLine("Usage: memory-get <project> <memoryId>");
+                    return 1;
+                }
+                await RunMemoryGet(args[1], args[2]);
+                break;
+                
+            case "memory-list":
+                if (args.Length < 2)
+                {
+                    Console.Error.WriteLine("Usage: memory-list <project> [tagFilter]");
+                    return 1;
+                }
+                await RunMemoryList(args[1], args.Length > 2 ? args[2] : null);
+                break;
+                
+            case "memory-delete":
+                if (args.Length < 3)
+                {
+                    Console.Error.WriteLine("Usage: memory-delete <project> <memoryId>");
+                    return 1;
+                }
+                await RunMemoryDelete(args[1], args[2]);
+                break;
+                
+            case "memory-stats":
+                if (args.Length < 2)
+                {
+                    Console.Error.WriteLine("Usage: memory-stats <project>");
+                    return 1;
+                }
+                await RunMemoryStats(args[1]);
+                break;
                 
             default:
                 Console.Error.WriteLine($"Unknown command: {command}");
@@ -337,6 +403,14 @@ void ShowUsage()
     Console.WriteLine("  dotnet run -- bench [dim] [vectors] [iter] [searches]  # Run performance benchmark");
     Console.WriteLine("                                                 # Default: 2048 10000 100 10");
     Console.WriteLine();
+    Console.WriteLine("Memory commands:");
+    Console.WriteLine("  dotnet run -- memory-add <project> <name> <content> [tags]  # Add a memory");
+    Console.WriteLine("  dotnet run -- memory-search <project> <query> [topK]        # Search memories");
+    Console.WriteLine("  dotnet run -- memory-get <project> <memoryId>               # Get a memory");
+    Console.WriteLine("  dotnet run -- memory-list <project> [tagFilter]             # List memories");
+    Console.WriteLine("  dotnet run -- memory-delete <project> <memoryId>            # Delete a memory");
+    Console.WriteLine("  dotnet run -- memory-stats <project>                        # Memory statistics");
+    Console.WriteLine();
     Console.WriteLine("Environment variables:");
     Console.WriteLine("  EMBEDDING_API_KEY      (required) API key for embedding service");
     Console.WriteLine("  EMBEDDING_DIMENSION    (required) Vector dimension (e.g., 1024, 1536, 4096)");
@@ -344,4 +418,207 @@ void ShowUsage()
     Console.WriteLine("  EMBEDDING_MODEL        Model name (default: text-embedding-3-small)");
     Console.WriteLine("  EMBEDDING_PRECISION    float32 or half (default: float32)");
     Console.WriteLine("  EMBEDDING_BATCH_SIZE   Batch size for embeddings (default: 50)");
+}
+
+// Memory command implementations
+async Task RunMemoryAdd(string project, string name, string content, string? tags)
+{
+    var config = Configuration.Load();
+    using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
+    
+    var memory = new CSharpMcpServer.Models.Memory
+    {
+        ProjectName = project,
+        MemoryName = name,
+        FullDocumentText = content,
+        Tags = string.IsNullOrEmpty(tags) ? new() : tags.Split(',').Select(t => t.Trim()).ToList()
+    };
+    
+    var stored = await indexer.AddMemoryAsync(memory);
+    
+    Console.WriteLine($"✓ Memory stored successfully");
+    Console.WriteLine($"  ID: {stored.Id}");
+    Console.WriteLine($"  Name: {stored.MemoryName}");
+    Console.WriteLine($"  Tags: {string.Join(", ", stored.Tags)}");
+    Console.WriteLine($"  Size: {stored.SizeInKBytes:F2} KB ({stored.LinesCount} lines)");
+}
+
+async Task RunMemorySearch(string project, string query, int topK)
+{
+    var config = Configuration.Load();
+    using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
+    
+    var searchConfig = new CSharpMcpServer.Models.MemorySearchConfig
+    {
+        TopK = topK,
+        SnippetLineCount = config.Memory.DefaultSnippetLines
+    };
+    
+    var sw = Stopwatch.StartNew();
+    var results = await indexer.SearchMemoriesAsync(query, searchConfig);
+    sw.Stop();
+    
+    Console.WriteLine($"\nSearch completed in {sw.ElapsedMilliseconds}ms");
+    Console.WriteLine($"Query: \"{query}\"");
+    Console.WriteLine($"Results: {results.Count}\n");
+    
+    foreach (var result in results)
+    {
+        Console.WriteLine($"--- Memory: {result.Memory.MemoryName} (Score: {result.Score:F4}) ---");
+        Console.WriteLine($"ID: {result.Memory.Id}");
+        Console.WriteLine($"Tags: {string.Join(", ", result.Memory.Tags)}");
+        Console.WriteLine($"Age: {result.Memory.AgeDisplay}");
+        Console.WriteLine($"Size: {result.Memory.SizeInKBytes:F2} KB ({result.Memory.LinesCount} lines)");
+        Console.WriteLine($"\nSnippet ({result.SnippetLineCount} lines):");
+        Console.WriteLine(result.SnippetText);
+        Console.WriteLine();
+    }
+}
+
+async Task RunMemoryGet(string project, string memoryId)
+{
+    var config = Configuration.Load();
+    using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
+    
+    var memory = await indexer.GetMemoryAsync(memoryId);
+    if (memory == null)
+    {
+        Console.Error.WriteLine($"Memory {memoryId} not found in project '{project}'");
+        return;
+    }
+    
+    Console.WriteLine($"=== Memory: {memory.MemoryName} ===");
+    Console.WriteLine($"ID: {memory.Id}");
+    Console.WriteLine($"Project: {memory.ProjectName}");
+    Console.WriteLine($"Tags: {string.Join(", ", memory.Tags)}");
+    Console.WriteLine($"Created: {memory.Timestamp:yyyy-MM-dd HH:mm:ss} UTC ({memory.AgeDisplay})");
+    Console.WriteLine($"Size: {memory.SizeInKBytes:F2} KB ({memory.LinesCount} lines)");
+    
+    if (!string.IsNullOrEmpty(memory.ParentMemoryId))
+    {
+        Console.WriteLine($"Parent: {memory.ParentMemoryId}");
+    }
+    
+    if (memory.ChildMemoryIds.Any())
+    {
+        Console.WriteLine($"Children: {memory.ChildMemoryIds.Count}");
+    }
+    
+    Console.WriteLine($"\n--- Content ---");
+    Console.WriteLine(memory.FullDocumentText);
+}
+
+async Task RunMemoryList(string project, string? tagFilter)
+{
+    var config = Configuration.Load();
+    using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
+    
+    var memories = await indexer.GetAllMemoriesAsync();
+    
+    if (!string.IsNullOrEmpty(tagFilter))
+    {
+        var tags = tagFilter.Split(',').Select(t => t.Trim().ToLower()).ToList();
+        memories = memories.Where(m => m.Tags.Any(t => tags.Contains(t.ToLower()))).ToList();
+    }
+    
+    Console.WriteLine($"=== Memories in project '{project}' ===");
+    if (!string.IsNullOrEmpty(tagFilter))
+    {
+        Console.WriteLine($"Filter: {tagFilter}");
+    }
+    Console.WriteLine($"Total: {memories.Count}\n");
+    
+    foreach (var memory in memories.OrderByDescending(m => m.Timestamp))
+    {
+        Console.WriteLine($"• {memory.MemoryName}");
+        Console.WriteLine($"  ID: {memory.Id}");
+        Console.WriteLine($"  Tags: {string.Join(", ", memory.Tags)}");
+        Console.WriteLine($"  Size: {memory.SizeInKBytes:F2} KB ({memory.LinesCount} lines)");
+        Console.WriteLine($"  Age: {memory.AgeDisplay}");
+        
+        if (!string.IsNullOrEmpty(memory.ParentMemoryId) || memory.ChildMemoryIds.Any())
+        {
+            var relations = new List<string>();
+            if (!string.IsNullOrEmpty(memory.ParentMemoryId)) relations.Add("has parent");
+            if (memory.ChildMemoryIds.Any()) relations.Add($"{memory.ChildMemoryIds.Count} children");
+            Console.WriteLine($"  Relations: {string.Join(", ", relations)}");
+        }
+        
+        Console.WriteLine();
+    }
+}
+
+async Task RunMemoryDelete(string project, string memoryId)
+{
+    var config = Configuration.Load();
+    using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
+    
+    var deleted = await indexer.DeleteMemoryAsync(memoryId);
+    
+    if (deleted)
+    {
+        Console.WriteLine($"✓ Memory {memoryId} deleted successfully");
+    }
+    else
+    {
+        Console.Error.WriteLine($"Memory {memoryId} not found in project '{project}'");
+    }
+}
+
+async Task RunMemoryStats(string project)
+{
+    var config = Configuration.Load();
+    using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
+    
+    var stats = indexer.GetMemoryStats();
+    var memories = await indexer.GetAllMemoriesAsync();
+    
+    Console.WriteLine($"=== Memory Statistics for '{project}' ===\n");
+    
+    Console.WriteLine("Vector Store:");
+    Console.WriteLine($"  Vectors: {stats.VectorCount}");
+    Console.WriteLine($"  Dimension: {stats.DimensionSize}");
+    Console.WriteLine($"  Memory Usage: {stats.TotalMemoryMB:F2} MB");
+    Console.WriteLine($"  Precision: {stats.Precision}");
+    Console.WriteLine($"  Search Method: {stats.SearchMethod}");
+    
+    Console.WriteLine("\nContent Statistics:");
+    Console.WriteLine($"  Total Memories: {memories.Count}");
+    Console.WriteLine($"  Total Size: {memories.Sum(m => m.SizeInKBytes):F2} KB");
+    Console.WriteLine($"  Total Lines: {memories.Sum(m => m.LinesCount):N0}");
+    
+    if (memories.Any())
+    {
+        Console.WriteLine($"  Average Size: {memories.Average(m => m.SizeInKBytes):F2} KB");
+        Console.WriteLine($"  Average Lines: {memories.Average(m => m.LinesCount):F1}");
+    }
+    
+    // Tag statistics
+    var tagCounts = memories
+        .SelectMany(m => m.Tags)
+        .GroupBy(t => t.ToLower())
+        .OrderByDescending(g => g.Count())
+        .Take(10)
+        .ToList();
+    
+    if (tagCounts.Any())
+    {
+        Console.WriteLine("\nTop Tags:");
+        foreach (var tag in tagCounts)
+        {
+            Console.WriteLine($"  {tag.Key}: {tag.Count()}");
+        }
+    }
+    
+    // Graph statistics
+    var withParent = memories.Count(m => !string.IsNullOrEmpty(m.ParentMemoryId));
+    var withChildren = memories.Count(m => m.ChildMemoryIds.Any());
+    
+    if (withParent > 0 || withChildren > 0)
+    {
+        Console.WriteLine("\nGraph Relations:");
+        Console.WriteLine($"  Memories with parent: {withParent}");
+        Console.WriteLine($"  Memories with children: {withChildren}");
+        Console.WriteLine($"  Total child links: {memories.Sum(m => m.ChildMemoryIds.Count)}");
+    }
 }
