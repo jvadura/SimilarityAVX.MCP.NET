@@ -638,6 +638,177 @@ namespace CSharpMcpServer.Protocol
         }
         
         /// <summary>
+        /// Get memory tree structure with ASCII visualization
+        /// </summary>
+        [McpServerTool]
+        [Description("Display memory tree structure with ASCII visualization. Shows hierarchical relationships between memories with IDs, aliases, names, and optionally content. Tree uses box-drawing characters for clear visualization.")]
+        public async Task<object> GetMemoryTree(
+            [Description("Project name")] string project,
+            [Description("Root memory ID or alias (null = show all root memories)")] string? rootMemoryIdOrAlias = null,
+            [Description("Maximum depth to display (default: 5)")] int maxDepth = 5,
+            [Description("Include memory content preview in output (default: false)")] bool includeContent = false,
+            [Description("Maximum content preview length in characters (default: 100)")] int contentPreviewLength = 100)
+        {
+            try
+            {
+                var indexer = GetOrCreateMemoryIndexer(project);
+                var allMemories = await indexer.GetAllMemoriesAsync();
+                
+                if (!allMemories.Any())
+                {
+                    return new
+                    {
+                        status = "success",
+                        message = "No memories found in project",
+                        tree = ""
+                    };
+                }
+                
+                // Build memory lookup for efficient traversal
+                var memoryLookup = allMemories.ToDictionary(m => m.Id);
+                
+                // Determine root memories
+                List<Memory> rootMemories;
+                if (!string.IsNullOrEmpty(rootMemoryIdOrAlias))
+                {
+                    // Find specific root memory
+                    var rootMemory = await indexer.GetMemoryByIdOrAliasAsync(rootMemoryIdOrAlias);
+                    if (rootMemory == null)
+                    {
+                        return new
+                        {
+                            status = "not_found",
+                            message = $"Memory '{rootMemoryIdOrAlias}' not found in project '{project}'"
+                        };
+                    }
+                    rootMemories = new List<Memory> { rootMemory };
+                }
+                else
+                {
+                    // Find all root memories (no parent)
+                    rootMemories = allMemories.Where(m => !m.ParentMemoryId.HasValue).ToList();
+                }
+                
+                if (!rootMemories.Any())
+                {
+                    return new
+                    {
+                        status = "success",
+                        message = "No root memories found",
+                        tree = ""
+                    };
+                }
+                
+                // Build tree visualization
+                var treeBuilder = new System.Text.StringBuilder();
+                var visitedIds = new HashSet<int>(); // Prevent circular references
+                
+                for (int i = 0; i < rootMemories.Count; i++)
+                {
+                    var isLastRoot = i == rootMemories.Count - 1;
+                    BuildTreeNode(treeBuilder, rootMemories[i], memoryLookup, visitedIds, 
+                                 "", isLastRoot, 0, maxDepth, includeContent, contentPreviewLength);
+                }
+                
+                return new
+                {
+                    status = "success",
+                    project = project,
+                    rootCount = rootMemories.Count,
+                    totalMemories = allMemories.Count,
+                    tree = treeBuilder.ToString()
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting memory tree");
+                return new { status = "error", message = ex.Message };
+            }
+        }
+        
+        /// <summary>
+        /// Recursively build tree node visualization
+        /// </summary>
+        private void BuildTreeNode(
+            System.Text.StringBuilder builder,
+            Memory memory,
+            Dictionary<int, Memory> memoryLookup,
+            HashSet<int> visitedIds,
+            string prefix,
+            bool isLast,
+            int currentDepth,
+            int maxDepth,
+            bool includeContent,
+            int contentPreviewLength)
+        {
+            // Prevent circular references
+            if (visitedIds.Contains(memory.Id))
+            {
+                builder.AppendLine($"{prefix}{(isLast ? "└── " : "├── ")}[CIRCULAR REFERENCE: #{memory.Id}]");
+                return;
+            }
+            
+            visitedIds.Add(memory.Id);
+            
+            // Build current node line
+            var nodePrefix = isLast ? "└── " : "├── ";
+            var nodeInfo = $"{memory.MemoryName} [#{memory.Id}]";
+            if (!string.IsNullOrEmpty(memory.Alias))
+            {
+                nodeInfo += $" @{memory.Alias}";
+            }
+            
+            builder.AppendLine($"{prefix}{nodePrefix}{nodeInfo}");
+            
+            // Add content preview if requested
+            if (includeContent && !string.IsNullOrWhiteSpace(memory.FullDocumentText))
+            {
+                var childPrefix = prefix + (isLast ? "    " : "│   ");
+                var contentPreview = memory.FullDocumentText.Length > contentPreviewLength
+                    ? memory.FullDocumentText.Substring(0, contentPreviewLength) + "..."
+                    : memory.FullDocumentText;
+                
+                // Clean up content for display
+                contentPreview = contentPreview.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
+                contentPreview = System.Text.RegularExpressions.Regex.Replace(contentPreview, @"\s+", " ").Trim();
+                
+                builder.AppendLine($"{childPrefix}    \"{contentPreview}\"");
+            }
+            
+            // Check depth limit
+            if (currentDepth >= maxDepth)
+            {
+                if (memory.ChildMemoryIds.Any())
+                {
+                    var childPrefix = prefix + (isLast ? "    " : "│   ");
+                    builder.AppendLine($"{childPrefix}└── ... ({memory.ChildMemoryIds.Count} more)");
+                }
+                return;
+            }
+            
+            // Process children
+            if (memory.ChildMemoryIds.Any())
+            {
+                var childPrefix = prefix + (isLast ? "    " : "│   ");
+                var children = memory.ChildMemoryIds
+                    .Where(id => memoryLookup.ContainsKey(id))
+                    .Select(id => memoryLookup[id])
+                    .OrderBy(m => m.MemoryName)
+                    .ToList();
+                
+                for (int i = 0; i < children.Count; i++)
+                {
+                    var isLastChild = i == children.Count - 1;
+                    BuildTreeNode(builder, children[i], memoryLookup, visitedIds,
+                                 childPrefix, isLastChild, currentDepth + 1, maxDepth,
+                                 includeContent, contentPreviewLength);
+                }
+            }
+            
+            visitedIds.Remove(memory.Id); // Allow revisiting in different branches
+        }
+        
+        /// <summary>
         /// Parse markdown content into sections based on headers
         /// </summary>
         private List<MarkdownSection> ParseMarkdownSections(string content)

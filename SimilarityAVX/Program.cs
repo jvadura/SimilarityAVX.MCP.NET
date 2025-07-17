@@ -381,6 +381,18 @@ await RunMemoryAdd(args[1], args[2], content, args.Length > 4 ? args[4] : null);
                 await RunMemoryImportMarkdown(args[1], args[2], importTags, importParentIdStr);
                 break;
                 
+            case "memory-tree":
+                if (args.Length < 2)
+                {
+                    Console.Error.WriteLine("Usage: memory-tree <project> [rootMemoryIdOrAlias] [maxDepth] [includeContent]");
+                    return 1;
+                }
+                var treeRootIdOrAlias = args.Length > 2 ? args[2] : null;
+                var treeMaxDepth = args.Length > 3 ? int.Parse(args[3]) : 5;
+                var treeIncludeContent = args.Length > 4 ? bool.Parse(args[4]) : false;
+                await RunMemoryTree(args[1], treeRootIdOrAlias, treeMaxDepth, treeIncludeContent);
+                break;
+                
             default:
                 Console.Error.WriteLine($"Unknown command: {command}");
                 ShowUsage();
@@ -445,6 +457,7 @@ void ShowUsage()
     Console.WriteLine("  dotnet run -- memory-delete <project> <memoryIdOrAlias>                     # Delete a memory");
     Console.WriteLine("  dotnet run -- memory-stats <project>                                  # Memory statistics");
     Console.WriteLine("  dotnet run -- memory-import-markdown <project> <markdownFile> [tags] [parentId]  # Import markdown hierarchy");
+    Console.WriteLine("  dotnet run -- memory-tree <project> [rootIdOrAlias] [maxDepth] [includeContent]  # Display memory tree");
     Console.WriteLine();
     Console.WriteLine("Environment variables:");
     Console.WriteLine("  EMBEDDING_API_KEY      (required) API key for embedding service");
@@ -863,6 +876,39 @@ async Task RunMemoryAddFile(string project, string name, string filePath, string
         {
             Console.Error.WriteLine($"Inner: {ex.InnerException.Message}");
         }
+    }
+}
+
+async Task RunMemoryTree(string project, string? rootIdOrAlias, int maxDepth, bool includeContent)
+{
+    var config = Configuration.Load();
+    var logger = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<CSharpMcpServer.Protocol.MemoryTools>();
+    var tools = new CSharpMcpServer.Protocol.MemoryTools(config, logger);
+    
+    try
+    {
+        var result = await tools.GetMemoryTree(project, rootIdOrAlias, maxDepth, includeContent, 100);
+        
+        dynamic dynResult = result;
+        if (dynResult.status == "success")
+        {
+            Console.WriteLine($"=== Memory Tree for '{project}' ===");
+            Console.WriteLine($"Root memories: {dynResult.rootCount}");
+            Console.WriteLine($"Total memories: {dynResult.totalMemories}\n");
+            Console.WriteLine(dynResult.tree);
+        }
+        else if (dynResult.status == "not_found")
+        {
+            Console.Error.WriteLine($"Error: {dynResult.message}");
+        }
+        else
+        {
+            Console.Error.WriteLine($"Error: {dynResult.message}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"Error getting memory tree: {ex.Message}");
     }
 }
 
