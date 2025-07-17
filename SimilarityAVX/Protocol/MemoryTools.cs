@@ -38,7 +38,7 @@ namespace CSharpMcpServer.Protocol
             [Description("Descriptive name for the memory (e.g., 'API Design Decisions', 'User Requirements')")] string memoryName,
             [Description("Full text content of the memory. Can be multiple paragraphs or structured text.")] string content,
             [Description("Comma-separated tags for categorization (e.g., 'architecture,api,decisions')")] string? tags = null,
-            [Description("Optional parent memory ID to create hierarchical relationships")] string? parentMemoryId = null)
+            [Description("Optional parent memory ID to create hierarchical relationships")] int? parentMemoryId = null)
         {
             try
             {
@@ -84,7 +84,7 @@ namespace CSharpMcpServer.Protocol
         [Description("Delete a memory by its ID. This permanently removes the memory and its embeddings from the system.")]
         public async Task<object> DeleteMemory(
             [Description("Project name")] string project,
-            [Description("The unique ID of the memory to delete")] string memoryId)
+            [Description("The unique ID of the memory to delete")] int memoryId)
         {
             try
             {
@@ -119,11 +119,12 @@ namespace CSharpMcpServer.Protocol
         /// Retrieve a memory by ID
         /// </summary>
         [McpServerTool]
-        [Description("Retrieve the full content of a memory by its ID. Returns complete text, metadata, and graph relationships if available.")]
+        [Description("Retrieve the full content of a memory by its ID. Returns memory object with id, name, content, tags, age, timestamp, metadata (linesCount, sizeKB), parentMemoryId, and optional parent/children objects when requested. Returns status: 'not_found' if memory doesn't exist.")]
         public async Task<object> GetMemory(
             [Description("Project name")] string project,
-            [Description("The unique ID of the memory to retrieve")] string memoryId,
-            [Description("Include child memories in response (default: true)")] bool includeChildren = true)
+            [Description("The unique ID of the memory to retrieve")] int memoryId,
+            [Description("Include child memories in response (default: true)")] bool includeChildren = true,
+            [Description("Include parent memory in response (default: true)")] bool includeParent = true)
         {
             try
             {
@@ -139,6 +140,38 @@ namespace CSharpMcpServer.Protocol
                     };
                 }
                 
+                // Get parent if requested and exists
+                object? parent = null;
+                if (includeParent && memory.ParentMemoryId.HasValue)
+                {
+                    var parentMemory = await indexer.GetMemoryAsync(memory.ParentMemoryId.Value);
+                    if (parentMemory != null)
+                    {
+                        parent = new
+                        {
+                            id = parentMemory.Id,
+                            name = parentMemory.MemoryName,
+                            age = parentMemory.AgeDisplay,
+                            tags = parentMemory.Tags
+                        };
+                    }
+                }
+                
+                // Get children if requested
+                object? children = null;
+                if (includeChildren && memory.ChildMemoryIds.Any())
+                {
+                    var childMemories = await indexer.GetChildMemoriesAsync(memory.Id, 10);
+                    children = childMemories.Select(c => new
+                    {
+                        id = c.Id,
+                        name = c.MemoryName,
+                        age = c.AgeDisplay,
+                        tags = c.Tags
+                    }).ToList();
+                }
+                
+                // Build response with consistent structure
                 var result = new
                 {
                     status = "success",
@@ -155,26 +188,11 @@ namespace CSharpMcpServer.Protocol
                             linesCount = memory.LinesCount,
                             sizeKB = Math.Round(memory.SizeInKBytes, 2)
                         },
-                        parentMemoryId = memory.ParentMemoryId
+                        parentMemoryId = memory.ParentMemoryId,
+                        parent = parent,
+                        children = children
                     }
                 };
-                
-                // Include children if requested
-                if (includeChildren && memory.ChildMemoryIds.Any())
-                {
-                    var storage = new MemoryStorage(project);
-                    var children = await storage.GetChildMemoriesAsync(memory.Id, 10);
-                    
-                    ((dynamic)result).memory.children = children.Select(c => new
-                    {
-                        id = c.Id,
-                        name = c.MemoryName,
-                        age = c.AgeDisplay,
-                        tags = c.Tags
-                    }).ToList();
-                    
-                    storage.Dispose();
-                }
                 
                 return result;
             }
@@ -189,7 +207,7 @@ namespace CSharpMcpServer.Protocol
         /// Search memories using semantic similarity
         /// </summary>
         [McpServerTool]
-        [Description("Search memories using natural language queries. Returns top matches with similarity scores, snippets, and metadata to help identify relevant memories. Great for finding related concepts, past decisions, or documented knowledge.")]
+        [Description("Search memories using natural language queries. Returns top matches with similarity scores (0.0-1.0, higher = more similar), snippets, and metadata. Typical useful results have scores > 0.3. Results are sorted by score (highest first). Great for finding related concepts, past decisions, or documented knowledge.")]
         public async Task<object> SearchMemories(
             [Description("Project name to search within")] string project,
             [Description("Natural language search query (e.g., 'authentication flow', 'API design decisions')")] string query,
@@ -256,7 +274,7 @@ namespace CSharpMcpServer.Protocol
         /// List all memories in a project
         /// </summary>
         [McpServerTool]
-        [Description("List all memories stored in a project. Returns memory names, tags, and ages for quick overview.")]
+        [Description("List all memories stored in a project. Returns memory objects with id, name, tags, age, linesCount, sizeKB, hasParent (boolean), and childCount (number of direct children). Useful for understanding memory hierarchy and organization.")]
         public async Task<object> ListMemories(
             [Description("Project name")] string project,
             [Description("Optional tag filter (comma-separated)")] string? filterTags = null)
@@ -288,7 +306,7 @@ namespace CSharpMcpServer.Protocol
                         age = m.AgeDisplay,
                         linesCount = m.LinesCount,
                         sizeKB = Math.Round(m.SizeInKBytes, 2),
-                        hasParent = !string.IsNullOrEmpty(m.ParentMemoryId),
+                        hasParent = m.ParentMemoryId.HasValue,
                         childCount = m.ChildMemoryIds.Count
                     }).ToList()
                 };
@@ -301,10 +319,91 @@ namespace CSharpMcpServer.Protocol
         }
         
         /// <summary>
+        /// Append content to an existing memory as a child memory
+        /// </summary>
+        [McpServerTool]
+        [Description("Append content to an existing memory as a child memory. When inheritParentTags=true (default), parent tags are automatically included. Additional tags can be provided and will be merged with inherited tags. Duplicate tags are automatically deduplicated.")]
+        public async Task<object> AppendToMemory(
+            [Description("Project name")] string project,
+            [Description("The ID of the parent memory to append to")] int parentMemoryId,
+            [Description("Descriptive name for the child memory")] string childMemoryName,
+            [Description("Full text content of the child memory")] string content,
+            [Description("Comma-separated tags for categorization (optional, inherits parent tags by default)")] string? tags = null,
+            [Description("Whether to inherit tags from parent memory (default: true)")] bool inheritParentTags = true)
+        {
+            try
+            {
+                var indexer = GetOrCreateMemoryIndexer(project);
+                
+                // Get parent memory to inherit tags if needed
+                var parentMemory = await indexer.GetMemoryAsync(parentMemoryId);
+                if (parentMemory == null)
+                {
+                    return new
+                    {
+                        status = "error",
+                        message = $"Parent memory {parentMemoryId} not found in project '{project}'"
+                    };
+                }
+                
+                // Build tag list
+                var tagList = new List<string>();
+                if (inheritParentTags && parentMemory.Tags.Any())
+                {
+                    tagList.AddRange(parentMemory.Tags);
+                }
+                if (!string.IsNullOrEmpty(tags))
+                {
+                    var newTags = tags.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t));
+                    foreach (var tag in newTags)
+                    {
+                        if (!tagList.Contains(tag, StringComparer.OrdinalIgnoreCase))
+                        {
+                            tagList.Add(tag);
+                        }
+                    }
+                }
+                
+                // Create child memory
+                var childMemory = new Memory
+                {
+                    ProjectName = project,
+                    MemoryName = childMemoryName,
+                    FullDocumentText = content,
+                    Tags = tagList,
+                    ParentMemoryId = parentMemoryId
+                };
+                
+                var stored = await indexer.AddMemoryAsync(childMemory);
+                
+                return new
+                {
+                    status = "success",
+                    memoryId = stored.Id,
+                    parentMemoryId = parentMemoryId,
+                    message = $"Child memory '{childMemoryName}' appended to parent memory {parentMemoryId}",
+                    metadata = new
+                    {
+                        linesCount = stored.LinesCount,
+                        sizeKB = Math.Round(stored.SizeInKBytes, 2),
+                        tags = stored.Tags,
+                        timestamp = stored.Timestamp.ToString("O"),
+                        inheritedTags = inheritParentTags && parentMemory.Tags.Any()
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error appending to memory");
+                return new { status = "error", message = ex.Message };
+            }
+        }
+        
+        /// <summary>
         /// Get memory statistics for a project
         /// </summary>
         [McpServerTool]
-        [Description("Get memory system statistics including vector count, memory usage, and performance metrics.")]
+        [Description("Get comprehensive memory system statistics including: memoryCount, vectorStats (vectorCount, dimension, memoryUsageMB, precision, searchMethod), contentStats (totalSizeKB, totalLines, averages), topTags (most frequent tags with counts), and graphStats (parent-child relationship counts).")]
         public async Task<object> GetMemoryStats(
             [Description("Project name")] string project)
         {
@@ -348,7 +447,7 @@ namespace CSharpMcpServer.Protocol
                     topTags = tagCounts,
                     graphStats = new
                     {
-                        memoriesWithParent = memories.Count(m => !string.IsNullOrEmpty(m.ParentMemoryId)),
+                        memoriesWithParent = memories.Count(m => m.ParentMemoryId.HasValue),
                         memoriesWithChildren = memories.Count(m => m.ChildMemoryIds.Any()),
                         totalChildLinks = memories.Sum(m => m.ChildMemoryIds.Count)
                     }

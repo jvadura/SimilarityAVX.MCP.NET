@@ -52,18 +52,20 @@ namespace CSharpMcpServer.Storage
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"
                 CREATE TABLE IF NOT EXISTS memories (
-                    id TEXT PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guid TEXT UNIQUE NOT NULL DEFAULT (lower(hex(randomblob(16)))),
                     project_name TEXT NOT NULL,
                     memory_name TEXT NOT NULL,
                     tags TEXT NOT NULL,
                     full_document_text TEXT NOT NULL,
                     timestamp TEXT NOT NULL,
-                    parent_memory_id TEXT,
+                    parent_memory_id INTEGER,
                     child_memory_ids TEXT,
                     lines_count INTEGER,
                     size_kb REAL,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (parent_memory_id) REFERENCES memories(id)
                 );
                 
                 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_name);
@@ -73,8 +75,8 @@ namespace CSharpMcpServer.Storage
                 
                 -- Vectors table for embeddings
                 CREATE TABLE IF NOT EXISTS memory_vectors (
-                    id TEXT PRIMARY KEY,
-                    memory_id TEXT NOT NULL,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    memory_id INTEGER NOT NULL,
                     project_name TEXT NOT NULL,
                     content TEXT NOT NULL,
                     embedding BLOB NOT NULL,
@@ -99,14 +101,15 @@ namespace CSharpMcpServer.Storage
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"
                 INSERT INTO memories (
-                    id, project_name, memory_name, tags, full_document_text, 
+                    guid, project_name, memory_name, tags, full_document_text, 
                     timestamp, parent_memory_id, child_memory_ids, lines_count, size_kb
                 ) VALUES (
-                    @id, @project_name, @memory_name, @tags, @full_document_text,
+                    @guid, @project_name, @memory_name, @tags, @full_document_text,
                     @timestamp, @parent_memory_id, @child_memory_ids, @lines_count, @size_kb
-                )";
+                );
+                SELECT last_insert_rowid();";
             
-            cmd.Parameters.AddWithValue("@id", memory.Id);
+            cmd.Parameters.AddWithValue("@guid", memory.Guid);
             cmd.Parameters.AddWithValue("@project_name", memory.ProjectName);
             cmd.Parameters.AddWithValue("@memory_name", memory.MemoryName);
             cmd.Parameters.AddWithValue("@tags", JsonSerializer.Serialize(memory.Tags, _jsonOptions));
@@ -117,17 +120,26 @@ namespace CSharpMcpServer.Storage
             cmd.Parameters.AddWithValue("@lines_count", memory.LinesCount);
             cmd.Parameters.AddWithValue("@size_kb", memory.SizeInKBytes);
             
-            await cmd.ExecuteNonQueryAsync();
+            // Get the auto-generated ID
+            var newId = Convert.ToInt32(await cmd.ExecuteScalarAsync());
+            memory.Id = newId;
+            
+            // Update parent's child list if applicable
+            if (memory.ParentMemoryId.HasValue)
+            {
+                await UpdateParentChildListAsync(memory.ParentMemoryId.Value, memory.Id, add: true);
+            }
+            
             return memory;
         }
         
-        public async Task<Memory?> GetMemoryAsync(string memoryId)
+        public async Task<Memory?> GetMemoryAsync(int memoryId)
         {
             if (_connection == null) throw new InvalidOperationException("Database not initialized");
             
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"
-                SELECT id, project_name, memory_name, tags, full_document_text,
+                SELECT id, guid, project_name, memory_name, tags, full_document_text,
                        timestamp, parent_memory_id, child_memory_ids
                 FROM memories
                 WHERE id = @id AND project_name = @project_name";
@@ -144,7 +156,7 @@ namespace CSharpMcpServer.Storage
             return null;
         }
         
-        public async Task<bool> DeleteMemoryAsync(string memoryId)
+        public async Task<bool> DeleteMemoryAsync(int memoryId)
         {
             if (_connection == null) throw new InvalidOperationException("Database not initialized");
             
@@ -168,7 +180,7 @@ namespace CSharpMcpServer.Storage
             
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"
-                SELECT id, project_name, memory_name, tags, full_document_text,
+                SELECT id, guid, project_name, memory_name, tags, full_document_text,
                        timestamp, parent_memory_id, child_memory_ids
                 FROM memories
                 WHERE project_name = @project_name
@@ -185,7 +197,7 @@ namespace CSharpMcpServer.Storage
             return memories;
         }
         
-        public async Task<List<Memory>> GetChildMemoriesAsync(string parentMemoryId, int limit = 10)
+        public async Task<List<Memory>> GetChildMemoriesAsync(int parentMemoryId, int limit = 10)
         {
             if (_connection == null) throw new InvalidOperationException("Database not initialized");
             
@@ -193,7 +205,7 @@ namespace CSharpMcpServer.Storage
             
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"
-                SELECT id, project_name, memory_name, tags, full_document_text,
+                SELECT id, guid, project_name, memory_name, tags, full_document_text,
                        timestamp, parent_memory_id, child_memory_ids
                 FROM memories
                 WHERE parent_memory_id = @parent_id AND project_name = @project_name
@@ -221,14 +233,13 @@ namespace CSharpMcpServer.Storage
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"
                 INSERT OR REPLACE INTO memory_vectors (
-                    id, memory_id, project_name, content, embedding, 
+                    memory_id, project_name, content, embedding, 
                     precision, dimension, indexed_at
                 ) VALUES (
-                    @id, @memory_id, @project_name, @content, @embedding,
+                    @memory_id, @project_name, @content, @embedding,
                     @precision, @dimension, @indexed_at
-                )";
-            
-            cmd.Parameters.AddWithValue("@id", vector.Id);
+                );
+                SELECT last_insert_rowid();";
             cmd.Parameters.AddWithValue("@memory_id", vector.MemoryId);
             cmd.Parameters.AddWithValue("@project_name", vector.ProjectName);
             cmd.Parameters.AddWithValue("@content", vector.Content);
@@ -252,7 +263,9 @@ namespace CSharpMcpServer.Storage
                 vector.Embedding.Length : vector.EmbeddingHalf.Length);
             cmd.Parameters.AddWithValue("@indexed_at", vector.IndexedAt.ToString("O"));
             
-            await cmd.ExecuteNonQueryAsync();
+            // Get the auto-generated ID
+            var newId = Convert.ToInt32(await cmd.ExecuteScalarAsync());
+            vector.Id = newId;
         }
         
         public async Task<List<MemoryVectorEntry>> GetAllVectorsAsync()
@@ -275,8 +288,8 @@ namespace CSharpMcpServer.Storage
             {
                 var vector = new MemoryVectorEntry
                 {
-                    Id = reader.GetString(0),
-                    MemoryId = reader.GetString(1),
+                    Id = reader.GetInt32(0),
+                    MemoryId = reader.GetInt32(1),
                     ProjectName = reader.GetString(2),
                     Content = reader.GetString(3),
                     Precision = Enum.Parse<VectorPrecision>(reader.GetString(5)),
@@ -303,7 +316,7 @@ namespace CSharpMcpServer.Storage
             return vectors;
         }
         
-        public async Task DeleteVectorAsync(string memoryId)
+        public async Task DeleteVectorAsync(int memoryId)
         {
             if (_connection == null) throw new InvalidOperationException("Database not initialized");
             
@@ -318,18 +331,47 @@ namespace CSharpMcpServer.Storage
             await cmd.ExecuteNonQueryAsync();
         }
         
+        private async Task UpdateParentChildListAsync(int parentId, int childId, bool add)
+        {
+            if (_connection == null) throw new InvalidOperationException("Database not initialized");
+            
+            var parent = await GetMemoryAsync(parentId);
+            if (parent == null) return;
+            
+            if (add && !parent.ChildMemoryIds.Contains(childId))
+            {
+                parent.ChildMemoryIds.Add(childId);
+            }
+            else if (!add)
+            {
+                parent.ChildMemoryIds.Remove(childId);
+            }
+            
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = @"
+                UPDATE memories 
+                SET child_memory_ids = @child_ids
+                WHERE id = @id";
+            
+            cmd.Parameters.AddWithValue("@child_ids", JsonSerializer.Serialize(parent.ChildMemoryIds, _jsonOptions));
+            cmd.Parameters.AddWithValue("@id", parentId);
+            
+            await cmd.ExecuteNonQueryAsync();
+        }
+        
         private Memory ReadMemoryFromReader(IDataReader reader)
         {
             return new Memory
             {
-                Id = reader.GetString(0),
-                ProjectName = reader.GetString(1),
-                MemoryName = reader.GetString(2),
-                Tags = JsonSerializer.Deserialize<List<string>>(reader.GetString(3), _jsonOptions) ?? new(),
-                FullDocumentText = reader.GetString(4),
-                Timestamp = DateTime.Parse(reader.GetString(5)),
-                ParentMemoryId = reader.IsDBNull(6) ? null : reader.GetString(6),
-                ChildMemoryIds = JsonSerializer.Deserialize<List<string>>(reader.GetString(7), _jsonOptions) ?? new()
+                Id = reader.GetInt32(0),
+                Guid = reader.GetString(1),
+                ProjectName = reader.GetString(2),
+                MemoryName = reader.GetString(3),
+                Tags = JsonSerializer.Deserialize<List<string>>(reader.GetString(4), _jsonOptions) ?? new(),
+                FullDocumentText = reader.GetString(5),
+                Timestamp = DateTime.Parse(reader.GetString(6)),
+                ParentMemoryId = reader.IsDBNull(7) ? null : reader.GetInt32(7),
+                ChildMemoryIds = JsonSerializer.Deserialize<List<int>>(reader.GetString(8), _jsonOptions) ?? new()
             };
         }
         

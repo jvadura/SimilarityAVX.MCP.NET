@@ -8,7 +8,8 @@ namespace CSharpMcpServer.Models
     /// </summary>
     public class Memory
     {
-        public string Id { get; set; } = Guid.NewGuid().ToString();
+        public int Id { get; set; }
+        public string Guid { get; set; } = System.Guid.NewGuid().ToString(); // Keep for transition
         public string ProjectName { get; set; } = string.Empty;
         public string MemoryName { get; set; } = string.Empty;
         public List<string> Tags { get; set; } = new();
@@ -16,8 +17,8 @@ namespace CSharpMcpServer.Models
         public DateTime Timestamp { get; set; } = DateTime.UtcNow;
         
         // Graph structure foundation (Phase 2)
-        public string? ParentMemoryId { get; set; }
-        public List<string> ChildMemoryIds { get; set; } = new();
+        public int? ParentMemoryId { get; set; }
+        public List<int> ChildMemoryIds { get; set; } = new();
         
         // Metadata for LLM
         public int LinesCount => string.IsNullOrEmpty(FullDocumentText) ? 0 : FullDocumentText.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries).Length;
@@ -55,8 +56,8 @@ namespace CSharpMcpServer.Models
     /// </summary>
     public class MemoryVectorEntry
     {
-        public string Id { get; set; } = string.Empty;
-        public string MemoryId { get; set; } = string.Empty;
+        public int Id { get; set; }
+        public int MemoryId { get; set; }
         public string ProjectName { get; set; } = string.Empty;
         public string Content { get; set; } = string.Empty;
         public float[] Embedding { get; set; } = Array.Empty<float>();

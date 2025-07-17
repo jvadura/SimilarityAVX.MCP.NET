@@ -261,6 +261,9 @@ public class SecurityConfig
 
 public class MemoryConfig
 {
+    [JsonPropertyName("embedding")]
+    public MemoryEmbeddingConfig Embedding { get; set; } = new();
+    
     [JsonPropertyName("defaultTopK")]
     public int DefaultTopK { get; set; } = 3;
     
@@ -275,4 +278,23 @@ public class MemoryConfig
     
     [JsonPropertyName("enableSessionStartSearch")]
     public bool EnableSessionStartSearch { get; set; } = true;
+}
+
+public class MemoryEmbeddingConfig
+{
+    [JsonPropertyName("model")]
+    public string Model { get; set; } = "voyage-3-large";
+    
+    [JsonPropertyName("dimension")]
+    public int? Dimension { get; set; } // null means use provider default
+    
+    // If not specified, will use the main embedding config settings
+    [JsonPropertyName("provider")]
+    public EmbeddingProvider? Provider { get; set; }
+    
+    [JsonPropertyName("apiUrl")]
+    public string? ApiUrl { get; set; }
+    
+    [JsonPropertyName("apiKey")]
+    public string? ApiKey { get; set; }
 }

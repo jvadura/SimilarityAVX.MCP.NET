@@ -14,7 +14,7 @@ namespace CSharpMcpServer.Storage
     public class MemoryVectorStore
     {
         private readonly List<MemoryVectorEntry> _vectors = new();
-        private readonly ConcurrentDictionary<string, int> _memoryIdToIndex = new();
+        private readonly ConcurrentDictionary<int, int> _memoryIdToIndex = new();
         private readonly HashSet<int> _deletedIndices = new();
         private readonly object _writeLock = new();
         
@@ -55,16 +55,34 @@ namespace CSharpMcpServer.Storage
                 _allVectorsFloat32 = new float[_capacity * _dimension];
                 _activeCount = vectors.Count;
                 
-                // Load vectors and build index in parallel
+                // Pre-allocate list to avoid race conditions
+                _vectors.Clear();
+                _vectors.Capacity = vectors.Count;
+                for (int i = 0; i < vectors.Count; i++)
+                {
+                    _vectors.Add(null!); // Pre-allocate slots
+                }
+                
+                // Load vectors and build index in parallel (now thread-safe)
                 Parallel.For(0, vectors.Count, new ParallelOptions { MaxDegreeOfParallelism = _maxDegreeOfParallelism }, i =>
                 {
                     var vector = vectors[i];
-                    _vectors.Add(vector);
+                    _vectors[i] = vector; // Safe: direct assignment to pre-allocated slot
                     _memoryIdToIndex[vector.MemoryId] = i;
                     
                     // Copy to columnar storage
                     Array.Copy(vector.Embedding, 0, _allVectorsFloat32!, i * _dimension, _dimension);
                 });
+                
+                // Validate index consistency
+                for (int i = 0; i < vectors.Count; i++)
+                {
+                    var vector = _vectors[i];
+                    if (!_memoryIdToIndex.TryGetValue(vector.MemoryId, out int mappedIndex) || mappedIndex != i)
+                    {
+                        throw new InvalidOperationException($"Index corruption detected: Memory ID {vector.MemoryId} at position {i} mapped to {mappedIndex}");
+                    }
+                }
                 
                 Console.WriteLine($"[MemoryVectorStore] Loaded {vectors.Count} vectors, dimension: {_dimension}, capacity: {_capacity}");
             }
@@ -106,7 +124,7 @@ namespace CSharpMcpServer.Storage
         /// <summary>
         /// Remove a vector by memory ID
         /// </summary>
-        public void RemoveVector(string memoryId)
+        public void RemoveVector(int memoryId)
         {
             lock (_writeLock)
             {
@@ -232,7 +250,7 @@ namespace CSharpMcpServer.Storage
         private void CompactVectors()
         {
             var newVectors = new List<MemoryVectorEntry>(_activeCount);
-            var newMemoryIdToIndex = new ConcurrentDictionary<string, int>();
+            var newMemoryIdToIndex = new ConcurrentDictionary<int, int>();
             var newAllVectorsFloat32 = new float[_activeCount * _dimension];
             
             int newIndex = 0;

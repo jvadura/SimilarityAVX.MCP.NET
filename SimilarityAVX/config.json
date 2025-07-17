@@ -32,5 +32,10 @@
   "security": {
     "allowedDirectories": ["E:\\"],
     "enablePathValidation": true
+  },
+  "memory": {
+    "embedding": {
+      "model": "voyage-3-large"
+    }
   }
 }

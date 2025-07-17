@@ -303,6 +303,27 @@ var content = args[3].Replace("\\n", "\n");
 await RunMemoryAdd(args[1], args[2], content, args.Length > 4 ? args[4] : null);
                 break;
                 
+            case "memory-add-file":
+                if (args.Length < 4)
+                {
+                    Console.Error.WriteLine("Usage: memory-add-file <project> <name> <file_path> [tags] [parentId]");
+                    return 1;
+                }
+                var tags = args.Length > 4 ? args[4] : null;
+                var parentIdStr = args.Length > 5 ? args[5] : null;
+                await RunMemoryAddFile(args[1], args[2], args[3], tags, parentIdStr);
+                break;
+                
+            case "memory-append":
+                if (args.Length < 5)
+                {
+                    Console.Error.WriteLine("Usage: memory-append <project> <parentId> <name> <content> [tags]");
+                    return 1;
+                }
+                var appendContent = args[4].Replace("\\n", "\n");
+                await RunMemoryAppend(args[1], args[2], args[3], appendContent, args.Length > 5 ? args[5] : null);
+                break;
+                
             case "memory-search":
                 if (args.Length < 3)
                 {
@@ -404,12 +425,14 @@ void ShowUsage()
     Console.WriteLine("                                                 # Default: 2048 10000 100 10");
     Console.WriteLine();
     Console.WriteLine("Memory commands:");
-    Console.WriteLine("  dotnet run -- memory-add <project> <name> <content> [tags]  # Add a memory");
-    Console.WriteLine("  dotnet run -- memory-search <project> <query> [topK]        # Search memories");
-    Console.WriteLine("  dotnet run -- memory-get <project> <memoryId>               # Get a memory");
-    Console.WriteLine("  dotnet run -- memory-list <project> [tagFilter]             # List memories");
-    Console.WriteLine("  dotnet run -- memory-delete <project> <memoryId>            # Delete a memory");
-    Console.WriteLine("  dotnet run -- memory-stats <project>                        # Memory statistics");
+    Console.WriteLine("  dotnet run -- memory-add <project> <name> <content> [tags]            # Add a memory");
+    Console.WriteLine("  dotnet run -- memory-add-file <project> <name> <file_path> [tags] [parentId]  # Add memory from file");
+    Console.WriteLine("  dotnet run -- memory-append <project> <parentId> <name> <content> [tags]  # Append child memory");
+    Console.WriteLine("  dotnet run -- memory-search <project> <query> [topK]                  # Search memories");
+    Console.WriteLine("  dotnet run -- memory-get <project> <memoryId>                         # Get a memory");
+    Console.WriteLine("  dotnet run -- memory-list <project> [tagFilter]                       # List memories");
+    Console.WriteLine("  dotnet run -- memory-delete <project> <memoryId>                      # Delete a memory");
+    Console.WriteLine("  dotnet run -- memory-stats <project>                                  # Memory statistics");
     Console.WriteLine();
     Console.WriteLine("Environment variables:");
     Console.WriteLine("  EMBEDDING_API_KEY      (required) API key for embedding service");
@@ -439,6 +462,60 @@ async Task RunMemoryAdd(string project, string name, string content, string? tag
     Console.WriteLine($"✓ Memory stored successfully");
     Console.WriteLine($"  ID: {stored.Id}");
     Console.WriteLine($"  Name: {stored.MemoryName}");
+    Console.WriteLine($"  Tags: {string.Join(", ", stored.Tags)}");
+    Console.WriteLine($"  Size: {stored.SizeInKBytes:F2} KB ({stored.LinesCount} lines)");
+}
+
+async Task RunMemoryAppend(string project, string parentIdStr, string name, string content, string? tags)
+{
+    if (!int.TryParse(parentIdStr, out var parentId))
+    {
+        Console.Error.WriteLine($"Invalid parent memory ID: {parentIdStr}. Memory IDs must be integers.");
+        return;
+    }
+    
+    var config = Configuration.Load();
+    using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
+    
+    // Get parent memory to inherit tags if needed
+    var parentMemory = await indexer.GetMemoryAsync(parentId);
+    if (parentMemory == null)
+    {
+        Console.Error.WriteLine($"Parent memory {parentId} not found in project '{project}'");
+        return;
+    }
+    
+    // Build tag list
+    var tagList = new List<string>();
+    tagList.AddRange(parentMemory.Tags); // Inherit parent tags
+    
+    if (!string.IsNullOrEmpty(tags))
+    {
+        var newTags = tags.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t));
+        foreach (var tag in newTags)
+        {
+            if (!tagList.Contains(tag, StringComparer.OrdinalIgnoreCase))
+            {
+                tagList.Add(tag);
+            }
+        }
+    }
+    
+    var memory = new CSharpMcpServer.Models.Memory
+    {
+        ProjectName = project,
+        MemoryName = name,
+        FullDocumentText = content,
+        Tags = tagList,
+        ParentMemoryId = parentId
+    };
+    
+    var stored = await indexer.AddMemoryAsync(memory);
+    
+    Console.WriteLine($"✓ Child memory appended successfully");
+    Console.WriteLine($"  ID: {stored.Id}");
+    Console.WriteLine($"  Name: {stored.MemoryName}");
+    Console.WriteLine($"  Parent: memory {parentId}");
     Console.WriteLine($"  Tags: {string.Join(", ", stored.Tags)}");
     Console.WriteLine($"  Size: {stored.SizeInKBytes:F2} KB ({stored.LinesCount} lines)");
 }
@@ -475,8 +552,14 @@ async Task RunMemorySearch(string project, string query, int topK)
     }
 }
 
-async Task RunMemoryGet(string project, string memoryId)
+async Task RunMemoryGet(string project, string memoryIdStr)
 {
+    if (!int.TryParse(memoryIdStr, out var memoryId))
+    {
+        Console.Error.WriteLine($"Invalid memory ID: {memoryIdStr}. Memory IDs must be integers.");
+        return;
+    }
+    
     var config = Configuration.Load();
     using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
     
@@ -494,9 +577,9 @@ async Task RunMemoryGet(string project, string memoryId)
     Console.WriteLine($"Created: {memory.Timestamp:yyyy-MM-dd HH:mm:ss} UTC ({memory.AgeDisplay})");
     Console.WriteLine($"Size: {memory.SizeInKBytes:F2} KB ({memory.LinesCount} lines)");
     
-    if (!string.IsNullOrEmpty(memory.ParentMemoryId))
+    if (memory.ParentMemoryId.HasValue)
     {
-        Console.WriteLine($"Parent: {memory.ParentMemoryId}");
+        Console.WriteLine($"Parent: memory {memory.ParentMemoryId.Value}");
     }
     
     if (memory.ChildMemoryIds.Any())
@@ -536,10 +619,10 @@ async Task RunMemoryList(string project, string? tagFilter)
         Console.WriteLine($"  Size: {memory.SizeInKBytes:F2} KB ({memory.LinesCount} lines)");
         Console.WriteLine($"  Age: {memory.AgeDisplay}");
         
-        if (!string.IsNullOrEmpty(memory.ParentMemoryId) || memory.ChildMemoryIds.Any())
+        if (memory.ParentMemoryId.HasValue || memory.ChildMemoryIds.Any())
         {
             var relations = new List<string>();
-            if (!string.IsNullOrEmpty(memory.ParentMemoryId)) relations.Add("has parent");
+            if (memory.ParentMemoryId.HasValue) relations.Add($"parent: {memory.ParentMemoryId.Value}");
             if (memory.ChildMemoryIds.Any()) relations.Add($"{memory.ChildMemoryIds.Count} children");
             Console.WriteLine($"  Relations: {string.Join(", ", relations)}");
         }
@@ -548,8 +631,14 @@ async Task RunMemoryList(string project, string? tagFilter)
     }
 }
 
-async Task RunMemoryDelete(string project, string memoryId)
+async Task RunMemoryDelete(string project, string memoryIdStr)
 {
+    if (!int.TryParse(memoryIdStr, out var memoryId))
+    {
+        Console.Error.WriteLine($"Invalid memory ID: {memoryIdStr}. Memory IDs must be integers.");
+        return;
+    }
+    
     var config = Configuration.Load();
     using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
     
@@ -611,7 +700,7 @@ async Task RunMemoryStats(string project)
     }
     
     // Graph statistics
-    var withParent = memories.Count(m => !string.IsNullOrEmpty(m.ParentMemoryId));
+    var withParent = memories.Count(m => m.ParentMemoryId.HasValue);
     var withChildren = memories.Count(m => m.ChildMemoryIds.Any());
     
     if (withParent > 0 || withChildren > 0)
@@ -620,5 +709,152 @@ async Task RunMemoryStats(string project)
         Console.WriteLine($"  Memories with parent: {withParent}");
         Console.WriteLine($"  Memories with children: {withChildren}");
         Console.WriteLine($"  Total child links: {memories.Sum(m => m.ChildMemoryIds.Count)}");
+    }
+}
+
+async Task RunMemoryAddFile(string project, string name, string filePath, string? tags, string? parentIdStr)
+{
+    try
+    {
+        // Validate and read the file
+        if (!File.Exists(filePath))
+        {
+            Console.Error.WriteLine($"ERROR: File not found: {filePath}");
+            return;
+        }
+        
+        var fileInfo = new FileInfo(filePath);
+        
+        // Check file size (warn if over 1MB, error if over 10MB)
+        const long maxSizeBytes = 10 * 1024 * 1024; // 10MB
+        const long warnSizeBytes = 1 * 1024 * 1024; // 1MB
+        
+        if (fileInfo.Length > maxSizeBytes)
+        {
+            Console.Error.WriteLine($"ERROR: File too large ({fileInfo.Length:N0} bytes). Maximum allowed: {maxSizeBytes:N0} bytes ({maxSizeBytes / (1024 * 1024)}MB)");
+            return;
+        }
+        
+        if (fileInfo.Length > warnSizeBytes)
+        {
+            Console.WriteLine($"WARNING: Large file detected ({fileInfo.Length:N0} bytes, {fileInfo.Length / 1024.0:F1} KB)");
+        }
+        
+        // Read file content
+        string content;
+        try
+        {
+            content = await File.ReadAllTextAsync(filePath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"ERROR: Failed to read file '{filePath}': {ex.Message}");
+            return;
+        }
+        
+        if (string.IsNullOrEmpty(content))
+        {
+            Console.Error.WriteLine($"ERROR: File '{filePath}' is empty");
+            return;
+        }
+        
+        // Parse parent ID if provided
+        int? parentId = null;
+        if (!string.IsNullOrEmpty(parentIdStr))
+        {
+            if (!int.TryParse(parentIdStr, out var pid))
+            {
+                Console.Error.WriteLine($"ERROR: Invalid parent memory ID: {parentIdStr}. Memory IDs must be integers.");
+                return;
+            }
+            parentId = pid;
+        }
+        
+        var config = Configuration.Load();
+        using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
+        
+        // If parent ID provided, validate it exists and inherit tags
+        List<string> tagList = new();
+        if (parentId.HasValue)
+        {
+            var parentMemory = await indexer.GetMemoryAsync(parentId.Value);
+            if (parentMemory == null)
+            {
+                Console.Error.WriteLine($"ERROR: Parent memory {parentId.Value} not found in project '{project}'");
+                return;
+            }
+            
+            // Inherit parent tags
+            tagList.AddRange(parentMemory.Tags);
+            Console.WriteLine($"Inheriting tags from parent memory {parentId.Value}: {string.Join(", ", parentMemory.Tags)}");
+        }
+        
+        // Add additional tags if provided
+        if (!string.IsNullOrEmpty(tags))
+        {
+            var newTags = tags.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t));
+            foreach (var tag in newTags)
+            {
+                if (!tagList.Contains(tag, StringComparer.OrdinalIgnoreCase))
+                {
+                    tagList.Add(tag);
+                }
+            }
+        }
+        
+        // Auto-add file-based tags
+        var extension = Path.GetExtension(filePath).ToLower();
+        if (!string.IsNullOrEmpty(extension))
+        {
+            var extensionTag = $"file-{extension.TrimStart('.')}";
+            if (!tagList.Contains(extensionTag, StringComparer.OrdinalIgnoreCase))
+            {
+                tagList.Add(extensionTag);
+            }
+        }
+        
+        // Add filename tag
+        var filenameTag = $"filename-{Path.GetFileNameWithoutExtension(filePath)}";
+        if (!tagList.Contains(filenameTag, StringComparer.OrdinalIgnoreCase))
+        {
+            tagList.Add(filenameTag);
+        }
+        
+        // Create memory object
+        var memory = new CSharpMcpServer.Models.Memory
+        {
+            ProjectName = project,
+            MemoryName = name,
+            FullDocumentText = content,
+            Tags = tagList,
+            ParentMemoryId = parentId
+        };
+        
+        Console.WriteLine($"Reading file: {filePath}");
+        Console.WriteLine($"File size: {fileInfo.Length:N0} bytes ({fileInfo.Length / 1024.0:F1} KB)");
+        Console.WriteLine($"Content length: {content.Length:N0} characters");
+        Console.WriteLine($"Line count: {content.Split('\n').Length}");
+        
+        // Store the memory
+        var stored = await indexer.AddMemoryAsync(memory);
+        
+        Console.WriteLine($"\n✓ Memory stored successfully from file");
+        Console.WriteLine($"  ID: {stored.Id}");
+        Console.WriteLine($"  Name: {stored.MemoryName}");
+        Console.WriteLine($"  Source: {filePath}");
+        if (parentId.HasValue)
+        {
+            Console.WriteLine($"  Parent: memory {parentId.Value}");
+        }
+        Console.WriteLine($"  Tags: {string.Join(", ", stored.Tags)}");
+        Console.WriteLine($"  Size: {stored.SizeInKBytes:F2} KB ({stored.LinesCount} lines)");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"ERROR: {ex.Message}");
+        if (ex.InnerException != null)
+        {
+            Console.Error.WriteLine($"Inner: {ex.InnerException.Message}");
+        }
     }
 }

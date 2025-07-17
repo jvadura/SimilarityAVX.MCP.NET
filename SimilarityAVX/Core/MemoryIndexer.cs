@@ -26,11 +26,45 @@ namespace CSharpMcpServer.Core
             _storage = new MemoryStorage(projectName);
             _vectorStore = new MemoryVectorStore();
             
+            // Create memory-specific embedding config
+            var memoryEmbeddingConfig = CreateMemoryEmbeddingConfig(config);
+            
             // Initialize embedding client (no caching for memories)
-            _embeddingClient = new EmbeddingClient(config.Embedding);
+            _embeddingClient = new EmbeddingClient(memoryEmbeddingConfig);
             
             // Load existing vectors on startup
             Task.Run(async () => await LoadExistingVectorsAsync()).Wait();
+        }
+        
+        private EmbeddingConfig CreateMemoryEmbeddingConfig(Configuration config)
+        {
+            // Start with a copy of the main embedding config
+            var memoryConfig = new EmbeddingConfig
+            {
+                Provider = config.Memory.Embedding.Provider ?? config.Embedding.Provider,
+                ApiUrl = config.Memory.Embedding.ApiUrl ?? config.Embedding.ApiUrl,
+                ApiKey = config.Memory.Embedding.ApiKey ?? config.Embedding.ApiKey,
+                Model = config.Memory.Embedding.Model, // Always use memory-specific model
+                Dimension = config.Memory.Embedding.Dimension ?? GetDefaultDimensionForModel(config.Memory.Embedding.Model),
+                Precision = config.Embedding.Precision,
+                BatchSize = config.Embedding.BatchSize,
+                MaxRetries = config.Embedding.MaxRetries,
+                RetryDelayMs = config.Embedding.RetryDelayMs,
+                QueryInstruction = config.Embedding.QueryInstruction
+            };
+            
+            return memoryConfig;
+        }
+        
+        private int GetDefaultDimensionForModel(string model)
+        {
+            return model.ToLower() switch
+            {
+                "voyage-3-large" => 2048,
+                "voyage-3" => 2048,
+                "voyage-code-3" => 2048,
+                _ => 2048 // Default
+            };
         }
         
         private async Task LoadExistingVectorsAsync()
@@ -61,7 +95,6 @@ namespace CSharpMcpServer.Core
             // Create vector entry
             var vectorEntry = new MemoryVectorEntry
             {
-                Id = Guid.NewGuid().ToString(),
                 MemoryId = storedMemory.Id,
                 ProjectName = _projectName,
                 Content = memory.FullDocumentText,
@@ -84,7 +117,7 @@ namespace CSharpMcpServer.Core
         /// <summary>
         /// Delete a memory and its vectors
         /// </summary>
-        public async Task<bool> DeleteMemoryAsync(string memoryId)
+        public async Task<bool> DeleteMemoryAsync(int memoryId)
         {
             // Remove from vector store
             _vectorStore.RemoveVector(memoryId);
@@ -106,9 +139,17 @@ namespace CSharpMcpServer.Core
         /// <summary>
         /// Retrieve a memory by ID
         /// </summary>
-        public async Task<Memory?> GetMemoryAsync(string memoryId)
+        public async Task<Memory?> GetMemoryAsync(int memoryId)
         {
             return await _storage.GetMemoryAsync(memoryId);
+        }
+        
+        /// <summary>
+        /// Get child memories for a parent memory
+        /// </summary>
+        public async Task<List<Memory>> GetChildMemoriesAsync(int parentMemoryId, int limit = 10)
+        {
+            return await _storage.GetChildMemoriesAsync(parentMemoryId, limit);
         }
         
         /// <summary>
@@ -142,10 +183,10 @@ namespace CSharpMcpServer.Core
                 var snippet = string.Join('\n', snippetLines);
                 
                 // Add graph relations if requested
-                if (config.IncludeGraphRelations && memory.ParentMemoryId != null)
+                if (config.IncludeGraphRelations && memory.ParentMemoryId.HasValue)
                 {
                     // Load parent memory info (just name, not full content)
-                    var parentMemory = await _storage.GetMemoryAsync(memory.ParentMemoryId);
+                    var parentMemory = await _storage.GetMemoryAsync(memory.ParentMemoryId.Value);
                     if (parentMemory != null)
                     {
                         memory.ParentMemoryId = parentMemory.Id;
