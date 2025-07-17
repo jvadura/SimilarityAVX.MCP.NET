@@ -143,6 +143,22 @@ namespace CSharpMcpServer.Core
         {
             return await _storage.GetMemoryAsync(memoryId);
         }
+
+        /// <summary>
+        /// Retrieve a memory by alias
+        /// </summary>
+        public async Task<Memory?> GetMemoryByAliasAsync(string alias)
+        {
+            return await _storage.GetMemoryByAliasAsync(alias);
+        }
+
+        /// <summary>
+        /// Retrieve a memory by ID or alias
+        /// </summary>
+        public async Task<Memory?> GetMemoryByIdOrAliasAsync(string idOrAlias)
+        {
+            return await _storage.GetMemoryByIdOrAliasAsync(idOrAlias);
+        }
         
         /// <summary>
         /// Get child memories for a parent memory

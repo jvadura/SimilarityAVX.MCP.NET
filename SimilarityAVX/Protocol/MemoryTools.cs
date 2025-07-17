@@ -60,7 +60,8 @@ namespace CSharpMcpServer.Protocol
                 {
                     status = "success",
                     memoryId = stored.Id,
-                    message = $"Memory '{memoryName}' stored successfully",
+                    alias = stored.Alias,
+                    message = $"Memory '{memoryName}' stored successfully with alias '{stored.Alias}'",
                     metadata = new
                     {
                         linesCount = stored.LinesCount,
@@ -81,30 +82,42 @@ namespace CSharpMcpServer.Protocol
         /// Delete a memory from the system
         /// </summary>
         [McpServerTool]
-        [Description("Delete a memory by its ID. This permanently removes the memory and its embeddings from the system.")]
+        [Description("Delete a memory by its ID or alias. This permanently removes the memory and its embeddings from the system.")]
         public async Task<object> DeleteMemory(
             [Description("Project name")] string project,
-            [Description("The unique ID of the memory to delete")] int memoryId)
+            [Description("The unique ID or alias of the memory to delete (e.g., 42 or 'api-design')")] string memoryIdOrAlias)
         {
             try
             {
                 var indexer = GetOrCreateMemoryIndexer(project);
-                var deleted = await indexer.DeleteMemoryAsync(memoryId);
+                
+                // First get the memory to check if it exists and get its ID
+                var memory = await indexer.GetMemoryByIdOrAliasAsync(memoryIdOrAlias);
+                if (memory == null)
+                {
+                    return new
+                    {
+                        status = "not_found",
+                        message = $"Memory '{memoryIdOrAlias}' not found in project '{project}'"
+                    };
+                }
+                
+                var deleted = await indexer.DeleteMemoryAsync(memory.Id);
                 
                 if (deleted)
                 {
                     return new
                     {
                         status = "success",
-                        message = $"Memory {memoryId} deleted successfully"
+                        message = $"Memory '{memoryIdOrAlias}' (ID: {memory.Id}) deleted successfully"
                     };
                 }
                 else
                 {
                     return new
                     {
-                        status = "not_found",
-                        message = $"Memory {memoryId} not found in project '{project}'"
+                        status = "error",
+                        message = $"Failed to delete memory '{memoryIdOrAlias}'"
                     };
                 }
             }
@@ -116,27 +129,27 @@ namespace CSharpMcpServer.Protocol
         }
         
         /// <summary>
-        /// Retrieve a memory by ID
+        /// Retrieve a memory by ID or alias
         /// </summary>
         [McpServerTool]
-        [Description("Retrieve the full content of a memory by its ID. Returns memory object with id, name, content, tags, age, timestamp, metadata (linesCount, sizeKB), parentMemoryId, and optional parent/children objects when requested. Returns status: 'not_found' if memory doesn't exist.")]
+        [Description("Retrieve the full content of a memory by its ID or alias. Accepts either integer ID (e.g., 42) or alias string (e.g., 'api-design'). Returns memory object with id, name, alias, content, tags, age, timestamp, metadata (linesCount, sizeKB), parentMemoryId, and optional parent/children objects when requested. Returns status: 'not_found' if memory doesn't exist.")]
         public async Task<object> GetMemory(
             [Description("Project name")] string project,
-            [Description("The unique ID of the memory to retrieve")] int memoryId,
+            [Description("The unique ID or alias of the memory to retrieve (e.g., 42 or 'api-design')")] string memoryIdOrAlias,
             [Description("Include child memories in response (default: true)")] bool includeChildren = true,
             [Description("Include parent memory in response (default: true)")] bool includeParent = true)
         {
             try
             {
                 var indexer = GetOrCreateMemoryIndexer(project);
-                var memory = await indexer.GetMemoryAsync(memoryId);
+                var memory = await indexer.GetMemoryByIdOrAliasAsync(memoryIdOrAlias);
                 
                 if (memory == null)
                 {
                     return new
                     {
                         status = "not_found",
-                        message = $"Memory {memoryId} not found in project '{project}'"
+                        message = $"Memory '{memoryIdOrAlias}' not found in project '{project}'"
                     };
                 }
                 
@@ -179,6 +192,7 @@ namespace CSharpMcpServer.Protocol
                     {
                         id = memory.Id,
                         name = memory.MemoryName,
+                        alias = memory.Alias,
                         content = memory.FullDocumentText,
                         tags = memory.Tags,
                         age = memory.AgeDisplay,
@@ -249,6 +263,7 @@ namespace CSharpMcpServer.Protocol
                         {
                             id = r.Memory.Id,
                             name = r.Memory.MemoryName,
+                            alias = r.Memory.Alias,
                             tags = r.Memory.Tags,
                             age = r.Memory.AgeDisplay
                         },
@@ -302,6 +317,7 @@ namespace CSharpMcpServer.Protocol
                     {
                         id = m.Id,
                         name = m.MemoryName,
+                        alias = m.Alias,
                         tags = m.Tags,
                         age = m.AgeDisplay,
                         linesCount = m.LinesCount,
@@ -325,7 +341,7 @@ namespace CSharpMcpServer.Protocol
         [Description("Append content to an existing memory as a child memory. When inheritParentTags=true (default), parent tags are automatically included. Additional tags can be provided and will be merged with inherited tags. Duplicate tags are automatically deduplicated.")]
         public async Task<object> AppendToMemory(
             [Description("Project name")] string project,
-            [Description("The ID of the parent memory to append to")] int parentMemoryId,
+            [Description("The ID or alias of the parent memory to append to (e.g., 42 or 'api-design')")] string parentMemoryIdOrAlias,
             [Description("Descriptive name for the child memory")] string childMemoryName,
             [Description("Full text content of the child memory")] string content,
             [Description("Comma-separated tags for categorization (optional, inherits parent tags by default)")] string? tags = null,
@@ -336,13 +352,13 @@ namespace CSharpMcpServer.Protocol
                 var indexer = GetOrCreateMemoryIndexer(project);
                 
                 // Get parent memory to inherit tags if needed
-                var parentMemory = await indexer.GetMemoryAsync(parentMemoryId);
+                var parentMemory = await indexer.GetMemoryByIdOrAliasAsync(parentMemoryIdOrAlias);
                 if (parentMemory == null)
                 {
                     return new
                     {
                         status = "error",
-                        message = $"Parent memory {parentMemoryId} not found in project '{project}'"
+                        message = $"Parent memory '{parentMemoryIdOrAlias}' not found in project '{project}'"
                     };
                 }
                 
@@ -371,7 +387,7 @@ namespace CSharpMcpServer.Protocol
                     MemoryName = childMemoryName,
                     FullDocumentText = content,
                     Tags = tagList,
-                    ParentMemoryId = parentMemoryId
+                    ParentMemoryId = parentMemory.Id
                 };
                 
                 var stored = await indexer.AddMemoryAsync(childMemory);
@@ -380,8 +396,9 @@ namespace CSharpMcpServer.Protocol
                 {
                     status = "success",
                     memoryId = stored.Id,
-                    parentMemoryId = parentMemoryId,
-                    message = $"Child memory '{childMemoryName}' appended to parent memory {parentMemoryId}",
+                    alias = stored.Alias,
+                    parentMemoryId = parentMemory.Id,
+                    message = $"Child memory '{childMemoryName}' with alias '{stored.Alias}' appended to parent memory '{parentMemoryIdOrAlias}' (ID: {parentMemory.Id})",
                     metadata = new
                     {
                         linesCount = stored.LinesCount,

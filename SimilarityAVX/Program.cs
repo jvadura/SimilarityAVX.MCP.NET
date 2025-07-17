@@ -317,7 +317,7 @@ await RunMemoryAdd(args[1], args[2], content, args.Length > 4 ? args[4] : null);
             case "memory-append":
                 if (args.Length < 5)
                 {
-                    Console.Error.WriteLine("Usage: memory-append <project> <parentId> <name> <content> [tags]");
+                    Console.Error.WriteLine("Usage: memory-append <project> <parentIdOrAlias> <name> <content> [tags]");
                     return 1;
                 }
                 var appendContent = args[4].Replace("\\n", "\n");
@@ -337,7 +337,7 @@ await RunMemoryAdd(args[1], args[2], content, args.Length > 4 ? args[4] : null);
             case "memory-get":
                 if (args.Length < 3)
                 {
-                    Console.Error.WriteLine("Usage: memory-get <project> <memoryId>");
+                    Console.Error.WriteLine("Usage: memory-get <project> <memoryIdOrAlias>");
                     return 1;
                 }
                 await RunMemoryGet(args[1], args[2]);
@@ -355,7 +355,7 @@ await RunMemoryAdd(args[1], args[2], content, args.Length > 4 ? args[4] : null);
             case "memory-delete":
                 if (args.Length < 3)
                 {
-                    Console.Error.WriteLine("Usage: memory-delete <project> <memoryId>");
+                    Console.Error.WriteLine("Usage: memory-delete <project> <memoryIdOrAlias>");
                     return 1;
                 }
                 await RunMemoryDelete(args[1], args[2]);
@@ -427,11 +427,11 @@ void ShowUsage()
     Console.WriteLine("Memory commands:");
     Console.WriteLine("  dotnet run -- memory-add <project> <name> <content> [tags]            # Add a memory");
     Console.WriteLine("  dotnet run -- memory-add-file <project> <name> <file_path> [tags] [parentId]  # Add memory from file");
-    Console.WriteLine("  dotnet run -- memory-append <project> <parentId> <name> <content> [tags]  # Append child memory");
-    Console.WriteLine("  dotnet run -- memory-search <project> <query> [topK]                  # Search memories");
-    Console.WriteLine("  dotnet run -- memory-get <project> <memoryId>                         # Get a memory");
-    Console.WriteLine("  dotnet run -- memory-list <project> [tagFilter]                       # List memories");
-    Console.WriteLine("  dotnet run -- memory-delete <project> <memoryId>                      # Delete a memory");
+    Console.WriteLine("  dotnet run -- memory-append <project> <parentIdOrAlias> <name> <content> [tags]  # Append child memory");
+    Console.WriteLine("  dotnet run -- memory-search <project> <query> [topK]                        # Search memories");
+    Console.WriteLine("  dotnet run -- memory-get <project> <memoryIdOrAlias>                        # Get a memory");
+    Console.WriteLine("  dotnet run -- memory-list <project> [tagFilter]                             # List memories");
+    Console.WriteLine("  dotnet run -- memory-delete <project> <memoryIdOrAlias>                     # Delete a memory");
     Console.WriteLine("  dotnet run -- memory-stats <project>                                  # Memory statistics");
     Console.WriteLine();
     Console.WriteLine("Environment variables:");
@@ -461,27 +461,22 @@ async Task RunMemoryAdd(string project, string name, string content, string? tag
     
     Console.WriteLine($"✓ Memory stored successfully");
     Console.WriteLine($"  ID: {stored.Id}");
+    Console.WriteLine($"  Alias: {stored.Alias ?? "(none)"}");
     Console.WriteLine($"  Name: {stored.MemoryName}");
     Console.WriteLine($"  Tags: {string.Join(", ", stored.Tags)}");
     Console.WriteLine($"  Size: {stored.SizeInKBytes:F2} KB ({stored.LinesCount} lines)");
 }
 
-async Task RunMemoryAppend(string project, string parentIdStr, string name, string content, string? tags)
+async Task RunMemoryAppend(string project, string parentIdOrAlias, string name, string content, string? tags)
 {
-    if (!int.TryParse(parentIdStr, out var parentId))
-    {
-        Console.Error.WriteLine($"Invalid parent memory ID: {parentIdStr}. Memory IDs must be integers.");
-        return;
-    }
-    
     var config = Configuration.Load();
     using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
     
     // Get parent memory to inherit tags if needed
-    var parentMemory = await indexer.GetMemoryAsync(parentId);
+    var parentMemory = await indexer.GetMemoryByIdOrAliasAsync(parentIdOrAlias);
     if (parentMemory == null)
     {
-        Console.Error.WriteLine($"Parent memory {parentId} not found in project '{project}'");
+        Console.Error.WriteLine($"Parent memory '{parentIdOrAlias}' not found in project '{project}'");
         return;
     }
     
@@ -507,7 +502,7 @@ async Task RunMemoryAppend(string project, string parentIdStr, string name, stri
         MemoryName = name,
         FullDocumentText = content,
         Tags = tagList,
-        ParentMemoryId = parentId
+        ParentMemoryId = parentMemory.Id
     };
     
     var stored = await indexer.AddMemoryAsync(memory);
@@ -515,7 +510,8 @@ async Task RunMemoryAppend(string project, string parentIdStr, string name, stri
     Console.WriteLine($"✓ Child memory appended successfully");
     Console.WriteLine($"  ID: {stored.Id}");
     Console.WriteLine($"  Name: {stored.MemoryName}");
-    Console.WriteLine($"  Parent: memory {parentId}");
+    Console.WriteLine($"  Alias: {stored.Alias ?? "(none)"}");
+    Console.WriteLine($"  Parent: '{parentIdOrAlias}' (ID: {parentMemory.Id})");
     Console.WriteLine($"  Tags: {string.Join(", ", stored.Tags)}");
     Console.WriteLine($"  Size: {stored.SizeInKBytes:F2} KB ({stored.LinesCount} lines)");
 }
@@ -552,26 +548,21 @@ async Task RunMemorySearch(string project, string query, int topK)
     }
 }
 
-async Task RunMemoryGet(string project, string memoryIdStr)
+async Task RunMemoryGet(string project, string memoryIdOrAlias)
 {
-    if (!int.TryParse(memoryIdStr, out var memoryId))
-    {
-        Console.Error.WriteLine($"Invalid memory ID: {memoryIdStr}. Memory IDs must be integers.");
-        return;
-    }
-    
     var config = Configuration.Load();
     using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
     
-    var memory = await indexer.GetMemoryAsync(memoryId);
+    var memory = await indexer.GetMemoryByIdOrAliasAsync(memoryIdOrAlias);
     if (memory == null)
     {
-        Console.Error.WriteLine($"Memory {memoryId} not found in project '{project}'");
+        Console.Error.WriteLine($"Memory '{memoryIdOrAlias}' not found in project '{project}'");
         return;
     }
     
     Console.WriteLine($"=== Memory: {memory.MemoryName} ===");
     Console.WriteLine($"ID: {memory.Id}");
+    Console.WriteLine($"Alias: {memory.Alias ?? "(none)"}");
     Console.WriteLine($"Project: {memory.ProjectName}");
     Console.WriteLine($"Tags: {string.Join(", ", memory.Tags)}");
     Console.WriteLine($"Created: {memory.Timestamp:yyyy-MM-dd HH:mm:ss} UTC ({memory.AgeDisplay})");
@@ -615,6 +606,7 @@ async Task RunMemoryList(string project, string? tagFilter)
     {
         Console.WriteLine($"• {memory.MemoryName}");
         Console.WriteLine($"  ID: {memory.Id}");
+        Console.WriteLine($"  Alias: {memory.Alias ?? "(none)"}");
         Console.WriteLine($"  Tags: {string.Join(", ", memory.Tags)}");
         Console.WriteLine($"  Size: {memory.SizeInKBytes:F2} KB ({memory.LinesCount} lines)");
         Console.WriteLine($"  Age: {memory.AgeDisplay}");
@@ -631,26 +623,28 @@ async Task RunMemoryList(string project, string? tagFilter)
     }
 }
 
-async Task RunMemoryDelete(string project, string memoryIdStr)
+async Task RunMemoryDelete(string project, string memoryIdOrAlias)
 {
-    if (!int.TryParse(memoryIdStr, out var memoryId))
-    {
-        Console.Error.WriteLine($"Invalid memory ID: {memoryIdStr}. Memory IDs must be integers.");
-        return;
-    }
-    
     var config = Configuration.Load();
     using var indexer = new CSharpMcpServer.Core.MemoryIndexer(project, config);
     
-    var deleted = await indexer.DeleteMemoryAsync(memoryId);
+    // First get the memory to check if it exists and get its ID
+    var memory = await indexer.GetMemoryByIdOrAliasAsync(memoryIdOrAlias);
+    if (memory == null)
+    {
+        Console.Error.WriteLine($"Memory '{memoryIdOrAlias}' not found in project '{project}'");
+        return;
+    }
+    
+    var deleted = await indexer.DeleteMemoryAsync(memory.Id);
     
     if (deleted)
     {
-        Console.WriteLine($"✓ Memory {memoryId} deleted successfully");
+        Console.WriteLine($"✓ Memory '{memoryIdOrAlias}' (ID: {memory.Id}) deleted successfully");
     }
     else
     {
-        Console.Error.WriteLine($"Memory {memoryId} not found in project '{project}'");
+        Console.Error.WriteLine($"Failed to delete memory '{memoryIdOrAlias}' (ID: {memory.Id})");
     }
 }
 
@@ -840,6 +834,7 @@ async Task RunMemoryAddFile(string project, string name, string filePath, string
         
         Console.WriteLine($"\n✓ Memory stored successfully from file");
         Console.WriteLine($"  ID: {stored.Id}");
+        Console.WriteLine($"  Alias: {stored.Alias ?? "(none)"}");
         Console.WriteLine($"  Name: {stored.MemoryName}");
         Console.WriteLine($"  Source: {filePath}");
         if (parentId.HasValue)

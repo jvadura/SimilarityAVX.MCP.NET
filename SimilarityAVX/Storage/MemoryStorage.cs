@@ -56,6 +56,7 @@ namespace CSharpMcpServer.Storage
                     guid TEXT UNIQUE NOT NULL DEFAULT (lower(hex(randomblob(16)))),
                     project_name TEXT NOT NULL,
                     memory_name TEXT NOT NULL,
+                    alias TEXT UNIQUE,
                     tags TEXT NOT NULL,
                     full_document_text TEXT NOT NULL,
                     timestamp TEXT NOT NULL,
@@ -72,6 +73,7 @@ namespace CSharpMcpServer.Storage
                 CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
                 CREATE INDEX IF NOT EXISTS idx_memories_parent ON memories(parent_memory_id);
                 CREATE INDEX IF NOT EXISTS idx_memories_name ON memories(memory_name);
+                CREATE INDEX IF NOT EXISTS idx_memories_alias ON memories(alias);
                 
                 -- Vectors table for embeddings
                 CREATE TABLE IF NOT EXISTS memory_vectors (
@@ -98,13 +100,19 @@ namespace CSharpMcpServer.Storage
             
             memory.ProjectName = _projectName; // Ensure project name matches
             
+            // Auto-generate alias if not provided
+            if (string.IsNullOrEmpty(memory.Alias))
+            {
+                memory.Alias = Utils.AliasGenerator.GenerateUniqueAlias(memory.MemoryName, alias => AliasExistsAsync(alias).Result);
+            }
+            
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"
                 INSERT INTO memories (
-                    guid, project_name, memory_name, tags, full_document_text, 
+                    guid, project_name, memory_name, alias, tags, full_document_text, 
                     timestamp, parent_memory_id, child_memory_ids, lines_count, size_kb
                 ) VALUES (
-                    @guid, @project_name, @memory_name, @tags, @full_document_text,
+                    @guid, @project_name, @memory_name, @alias, @tags, @full_document_text,
                     @timestamp, @parent_memory_id, @child_memory_ids, @lines_count, @size_kb
                 );
                 SELECT last_insert_rowid();";
@@ -112,6 +120,7 @@ namespace CSharpMcpServer.Storage
             cmd.Parameters.AddWithValue("@guid", memory.Guid);
             cmd.Parameters.AddWithValue("@project_name", memory.ProjectName);
             cmd.Parameters.AddWithValue("@memory_name", memory.MemoryName);
+            cmd.Parameters.AddWithValue("@alias", (object?)memory.Alias ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@tags", JsonSerializer.Serialize(memory.Tags, _jsonOptions));
             cmd.Parameters.AddWithValue("@full_document_text", memory.FullDocumentText);
             cmd.Parameters.AddWithValue("@timestamp", memory.Timestamp.ToString("O"));
@@ -139,7 +148,7 @@ namespace CSharpMcpServer.Storage
             
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"
-                SELECT id, guid, project_name, memory_name, tags, full_document_text,
+                SELECT id, guid, project_name, memory_name, alias, tags, full_document_text,
                        timestamp, parent_memory_id, child_memory_ids
                 FROM memories
                 WHERE id = @id AND project_name = @project_name";
@@ -154,6 +163,58 @@ namespace CSharpMcpServer.Storage
             }
             
             return null;
+        }
+
+        public async Task<Memory?> GetMemoryByAliasAsync(string alias)
+        {
+            if (_connection == null) throw new InvalidOperationException("Database not initialized");
+            
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = @"
+                SELECT id, guid, project_name, memory_name, alias, tags, full_document_text,
+                       timestamp, parent_memory_id, child_memory_ids
+                FROM memories
+                WHERE alias = @alias AND project_name = @project_name";
+            
+            cmd.Parameters.AddWithValue("@alias", alias);
+            cmd.Parameters.AddWithValue("@project_name", _projectName);
+            
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                return ReadMemoryFromReader(reader);
+            }
+            
+            return null;
+        }
+
+        public async Task<Memory?> GetMemoryByIdOrAliasAsync(string idOrAlias)
+        {
+            // Try to parse as integer ID first
+            if (int.TryParse(idOrAlias, out var id))
+            {
+                return await GetMemoryAsync(id);
+            }
+            
+            // Otherwise treat as alias
+            return await GetMemoryByAliasAsync(idOrAlias);
+        }
+
+        public async Task<bool> AliasExistsAsync(string alias)
+        {
+            if (_connection == null) throw new InvalidOperationException("Database not initialized");
+            
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = @"
+                SELECT COUNT(*)
+                FROM memories
+                WHERE alias = @alias AND project_name = @project_name";
+            
+            cmd.Parameters.AddWithValue("@alias", alias);
+            cmd.Parameters.AddWithValue("@project_name", _projectName);
+            
+            var count = Convert.ToInt32(await cmd.ExecuteScalarAsync());
+            return count > 0;
         }
         
         public async Task<bool> DeleteMemoryAsync(int memoryId)
@@ -180,7 +241,7 @@ namespace CSharpMcpServer.Storage
             
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"
-                SELECT id, guid, project_name, memory_name, tags, full_document_text,
+                SELECT id, guid, project_name, memory_name, alias, tags, full_document_text,
                        timestamp, parent_memory_id, child_memory_ids
                 FROM memories
                 WHERE project_name = @project_name
@@ -205,7 +266,7 @@ namespace CSharpMcpServer.Storage
             
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"
-                SELECT id, guid, project_name, memory_name, tags, full_document_text,
+                SELECT id, guid, project_name, memory_name, alias, tags, full_document_text,
                        timestamp, parent_memory_id, child_memory_ids
                 FROM memories
                 WHERE parent_memory_id = @parent_id AND project_name = @project_name
@@ -367,11 +428,12 @@ namespace CSharpMcpServer.Storage
                 Guid = reader.GetString(1),
                 ProjectName = reader.GetString(2),
                 MemoryName = reader.GetString(3),
-                Tags = JsonSerializer.Deserialize<List<string>>(reader.GetString(4), _jsonOptions) ?? new(),
-                FullDocumentText = reader.GetString(5),
-                Timestamp = DateTime.Parse(reader.GetString(6)),
-                ParentMemoryId = reader.IsDBNull(7) ? null : reader.GetInt32(7),
-                ChildMemoryIds = JsonSerializer.Deserialize<List<int>>(reader.GetString(8), _jsonOptions) ?? new()
+                Alias = reader.IsDBNull(4) ? null : reader.GetString(4),
+                Tags = JsonSerializer.Deserialize<List<string>>(reader.GetString(5), _jsonOptions) ?? new(),
+                FullDocumentText = reader.GetString(6),
+                Timestamp = DateTime.Parse(reader.GetString(7)),
+                ParentMemoryId = reader.IsDBNull(8) ? null : reader.GetInt32(8),
+                ChildMemoryIds = JsonSerializer.Deserialize<List<int>>(reader.GetString(9), _jsonOptions) ?? new()
             };
         }
         

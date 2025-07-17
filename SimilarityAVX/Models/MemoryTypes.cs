@@ -12,6 +12,7 @@ namespace CSharpMcpServer.Models
         public string Guid { get; set; } = System.Guid.NewGuid().ToString(); // Keep for transition
         public string ProjectName { get; set; } = string.Empty;
         public string MemoryName { get; set; } = string.Empty;
+        public string? Alias { get; set; }
         public List<string> Tags { get; set; } = new();
         public string FullDocumentText { get; set; } = string.Empty;
         public DateTime Timestamp { get; set; } = DateTime.UtcNow;
