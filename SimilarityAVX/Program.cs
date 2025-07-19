@@ -911,7 +911,7 @@ async Task RunMemoryTree(string project, string? rootIdOrAlias, int maxDepth, bo
     
     try
     {
-        var result = await tools.GetMemoryTree(project, rootIdOrAlias, maxDepth, includeContent, 100);
+        var result = await tools.MemoryGetTree(project, rootIdOrAlias, maxDepth, includeContent, 100);
         
         dynamic dynResult = result;
         if (dynResult.status == "success")
@@ -1032,7 +1032,7 @@ async Task RunMemoryExport(string project, string? rootIdOrAlias, string format,
             
         Console.WriteLine($"Exporting memories from '{project}' as {format}...");
         
-        var result = await tools.ExportMemoryTree(project, rootIdOrAlias, format, true, 10, true);
+        var result = await tools.MemoryExportTree(project, rootIdOrAlias, format, true, 10, true);
         
         dynamic dynResult = result;
         if (dynResult.status == "success")
@@ -1110,7 +1110,7 @@ async Task RunMemoryImportMarkdown(string project, string markdownFile, string? 
         Console.WriteLine($"Processing markdown structure...");
         
         // Call the ImportMarkdownAsMemories tool
-        var result = await memoryTools.ImportMarkdownAsMemories(project, markdownFile, parentId, tags);
+        var result = await memoryTools.MemoryImportMarkdown(project, markdownFile, parentId, tags);
         
         // Handle the result dynamically based on its type
         dynamic dynResult = result;
