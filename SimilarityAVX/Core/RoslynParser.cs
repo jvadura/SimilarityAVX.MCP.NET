@@ -14,12 +14,14 @@ public class RoslynParser
     private readonly int MaxChunkSize;
     private readonly bool _includeFilePath;
     private readonly bool _includeProjectContext;
+    private readonly SlidingWindowConfig _slidingWindowConfig;
     
-    public RoslynParser(bool includeFilePath = false, bool includeProjectContext = false, int maxChunkSize = 100000)
+    public RoslynParser(bool includeFilePath = false, bool includeProjectContext = false, int maxChunkSize = 100000, SlidingWindowConfig? slidingWindowConfig = null)
     {
         _includeFilePath = includeFilePath;
         _includeProjectContext = includeProjectContext;
         MaxChunkSize = maxChunkSize;
+        _slidingWindowConfig = slidingWindowConfig ?? new SlidingWindowConfig();
     }
     
     public List<CodeChunk> ParseFile(string filePath)
@@ -367,14 +369,62 @@ public class RoslynParser
         // Add the full method
         var methodStr = method.ToFullString().Trim();
         
-        // If method is too large, truncate the body
+        // If method is too large, do smart truncation preserving beginning
         if (methodStr.Length > MaxChunkSize)
         {
-            var signature = $"{method.Modifiers} {method.ReturnType} {method.Identifier}{method.ParameterList}";
-            parts.Add(signature);
-            parts.Add("{");
-            parts.Add("    // Method body truncated for embedding...");
-            parts.Add("}");
+            // Calculate available space for method content after context
+            var currentContextSize = string.Join("\n", parts).Length;
+            var availableSpace = MaxChunkSize - currentContextSize - 200; // Reserve 200 chars for truncation message
+            
+            if (availableSpace > 500) // Only truncate if we have meaningful space left
+            {
+                // Extract method signature and beginning of body
+                var methodLines = methodStr.Split('\n');
+                var truncatedLines = new List<string>();
+                var currentSize = 0;
+                
+                // Add lines until we hit the size limit
+                foreach (var line in methodLines)
+                {
+                    var lineSize = line.Length + 1; // +1 for newline
+                    if (currentSize + lineSize > availableSpace)
+                    {
+                        break;
+                    }
+                    truncatedLines.Add(line);
+                    currentSize += lineSize;
+                }
+                
+                // Add the truncated content with clear indication
+                if (truncatedLines.Count > 0)
+                {
+                    parts.AddRange(truncatedLines);
+                    parts.Add("");
+                    parts.Add($"    // ... METHOD BODY TRUNCATED ({methodStr.Length - currentSize} chars remaining) ...");
+                    parts.Add($"    // Original method: {methodLines.Length} lines, showing first {truncatedLines.Count} lines");
+                    
+                    // Close method if we haven't reached the closing brace
+                    if (!truncatedLines.LastOrDefault()?.Trim().Equals("}") == true)
+                    {
+                        parts.Add("}");
+                    }
+                }
+                else
+                {
+                    // Fallback: just signature if no room for content
+                    var signature = $"{method.Modifiers} {method.ReturnType} {method.Identifier}{method.ParameterList}";
+                    parts.Add(signature);
+                    parts.Add("{");
+                    parts.Add($"    // Method too large for context ({methodStr.Length} chars) - signature only");
+                    parts.Add("}");
+                }
+            }
+            else
+            {
+                // Very little space left - just signature
+                var signature = $"{method.Modifiers} {method.ReturnType} {method.Identifier}{method.ParameterList}";
+                parts.Add(signature + $"; // Method body too large ({methodStr.Length} chars)");
+            }
         }
         else
         {
@@ -702,7 +752,8 @@ public class RoslynParser
         if (lines.Length == 0) return chunks;
         
         // If file is small enough, return as single chunk
-        if (code.Length <= MaxChunkSize)
+        // Use sliding window target size to decide when to split, not the embedding limit
+        if (code.Length <= _slidingWindowConfig.TargetChunkSize)
         {
             chunks.Add(new CodeChunk(
                 $"{filePath}:1",
@@ -715,8 +766,8 @@ public class RoslynParser
             return chunks;
         }
         
-        // Configuration for sliding window
-        var targetChunkSize = MaxChunkSize * 0.75; // Leave room for overlap and context
+        // Configuration for sliding window - now completely separate from MaxChunkSize
+        var targetChunkSize = _slidingWindowConfig.TargetChunkSize;
         
         var currentLine = 0;
         var chunkNumber = 1;
@@ -754,8 +805,8 @@ public class RoslynParser
                 var chunkContent = string.Join("\n", chunkLines);
                 var contextualContent = AddFilePathContext(chunkContent, filePath);
                 
-                // Add chunk metadata if multiple chunks
-                if (lines.Length > MaxChunkSize / 50) // Only for larger files
+                // Add chunk metadata if file will have multiple chunks
+                if (code.Length > _slidingWindowConfig.TargetChunkSize) // Only for files that get chunked
                 {
                     contextualContent = $"// Chunk {chunkNumber} of file\n{contextualContent}";
                 }
@@ -772,10 +823,10 @@ public class RoslynParser
                 chunkNumber++;
             }
             
-            // Calculate overlap for next chunk
+            // Calculate overlap for next chunk using configuration
             if (currentLine < lines.Length)
             {
-                var overlapLines = Math.Min((int)(chunkLines.Count * 0.15), 10); // Max 10 lines overlap
+                var overlapLines = Math.Min((int)(chunkLines.Count * _slidingWindowConfig.OverlapPercentage), _slidingWindowConfig.MaxOverlapLines);
                 currentLine = Math.Max(startLine + chunkLines.Count - overlapLines, startLine + 1);
             }
         }

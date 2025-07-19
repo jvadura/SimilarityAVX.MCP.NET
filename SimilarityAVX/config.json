@@ -13,7 +13,12 @@
   "parser": {
     "includeFilePath": false,
     "includeProjectContext": false,
-    "maxChunkSize": 100000
+    "maxChunkSize": 100000,
+    "slidingWindow": {
+      "targetChunkSize": 10000,
+      "overlapPercentage": 0.15,
+      "maxOverlapLines": 10
+    }
   },
   "performance": {
     "enableAvx512": "Auto",

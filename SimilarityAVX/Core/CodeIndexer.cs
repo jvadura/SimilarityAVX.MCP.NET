@@ -36,7 +36,7 @@ public class CodeIndexer : IDisposable
         _storage = new SqliteStorage(projectName);
         
         // Configure parsers with options from config
-        _parser = new RoslynParser(config.Parser.IncludeFilePath, config.Parser.IncludeProjectContext, config.Parser.MaxChunkSize);
+        _parser = new RoslynParser(config.Parser.IncludeFilePath, config.Parser.IncludeProjectContext, config.Parser.MaxChunkSize, config.Parser.SlidingWindow);
         _cParser = new CParser(config.Parser.MaxChunkSize, config.Parser.IncludeFilePath, config.Parser.IncludeProjectContext);
         
         _synchronizer = new FileSynchronizer(config.Performance.MaxDegreeOfParallelism);

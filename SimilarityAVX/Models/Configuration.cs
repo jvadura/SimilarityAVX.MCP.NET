@@ -170,11 +170,44 @@ public class ParserConfig
     [JsonPropertyName("includeProjectContext")]
     public bool IncludeProjectContext { get; set; } = false;
     
+    /// <summary>
+    /// Hard limit for embedding model - chunks exceeding this are truncated
+    /// Should match your embedding model's token limit (~32K tokens = ~100K chars)
+    /// </summary>
     [JsonPropertyName("maxChunkSize")]
     public int MaxChunkSize { get; set; } = 100000;
     
     [JsonPropertyName("enableSlidingWindow")]
     public bool EnableSlidingWindow { get; set; } = true;
+    
+    /// <summary>
+    /// Sliding window configuration for splitting large unstructured files
+    /// Completely separate from maxChunkSize - this is for creating overlapping chunks
+    /// </summary>
+    [JsonPropertyName("slidingWindow")]
+    public SlidingWindowConfig SlidingWindow { get; set; } = new();
+}
+
+public class SlidingWindowConfig
+{
+    /// <summary>
+    /// Target chunk size for sliding window (independent of embedding limit)
+    /// Recommended: 15K-25K chars for good overlap and context preservation
+    /// </summary>
+    [JsonPropertyName("targetChunkSize")]
+    public int TargetChunkSize { get; set; } = 10000;
+    
+    /// <summary>
+    /// Overlap percentage between consecutive chunks (0.1 = 10%, 0.2 = 20%)
+    /// </summary>
+    [JsonPropertyName("overlapPercentage")]
+    public double OverlapPercentage { get; set; } = 0.15;
+    
+    /// <summary>
+    /// Maximum number of lines to overlap between chunks
+    /// </summary>
+    [JsonPropertyName("maxOverlapLines")]
+    public int MaxOverlapLines { get; set; } = 10;
 }
 
 public class PerformanceConfig
