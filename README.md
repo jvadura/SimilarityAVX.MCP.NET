@@ -114,28 +114,42 @@ Server will start on `http://0.0.0.0:5001`
 
 4. Add to Claude Code:
 ```bash
-claude mcp add csharp-search --transport sse http://localhost:5001/sse
+claude mcp add cstools --transport sse http://localhost:5001/sse
 ```
 
 **For remote access** (if running on different machine):
 ```bash
-claude mcp add csharp-search --transport sse http://YOUR_IP:5001/sse
+claude mcp add cstools --transport sse http://YOUR_IP:5001/sse
 ```
 
 ## Available Tools
 
-**Search Tools:**
-- `SearchProject` - Basic semantic search with relevance scoring ⭐
-- `SearchWithContext` - Extended context viewing (15-20 lines recommended) ⭐
-- `SearchWithFilters` - Filter by file types and code structures ⭐
-- `BatchSearch` - Multiple queries at once (3-5 optimal) ⭐
-- `GetFilterHelp` - Comprehensive help for search filters
+### Code Search Tools
+- `mcp__cstools__code_search` - Basic semantic search with relevance scoring ⭐
+- `mcp__cstools__code_search_context` - Extended context viewing (15-20 lines recommended) ⭐
+- `mcp__cstools__code_search_filtered` - Filter by file types and code structures ⭐
+- `mcp__cstools__code_batch_search` - Multiple queries at once (3-5 optimal) ⭐
+- `mcp__cstools__code_get_filter_help` - Comprehensive help for search filters
 
-**Management Tools:**
-- `IndexProject` - Index or update projects (use `--force true` for reindexing)
-- `ListProjects` - Show all indexed projects
-- `GetProjectStats` - Memory and performance info
-- `ClearProjectIndex` - Remove project index
+### Code Management Tools
+- `mcp__cstools__code_index` - Index or update projects (use `force: true` for reindexing)
+- `mcp__cstools__code_list_projects` - Show all indexed projects
+- `mcp__cstools__code_get_stats` - Memory and performance info
+- `mcp__cstools__code_clear_index` - Remove project index
+- `mcp__cstools__code_get_directory` - Get project root directory
+
+### Memory Management Tools (NEW!) 
+- `mcp__cstools__memory_add` - Store persistent memories with tags and metadata
+- `mcp__cstools__memory_get` - Retrieve full memory content with parent/child context
+- `mcp__cstools__memory_search` - Semantic search with relevance scores
+- `mcp__cstools__memory_list` - List all memories with tag filtering
+- `mcp__cstools__memory_delete` - Remove memories by ID or alias
+- `mcp__cstools__memory_update` - Update existing memory content, name, or tags
+- `mcp__cstools__memory_append` - Append child memories with automatic tag inheritance
+- `mcp__cstools__memory_get_stats` - Memory system statistics
+- `mcp__cstools__memory_get_tree` - ASCII tree visualization
+- `mcp__cstools__memory_export_tree` - Export memory hierarchies as markdown/JSON
+- `mcp__cstools__memory_import_markdown` - Import markdown files as memory hierarchies
 
 ## Performance
 
@@ -220,6 +234,47 @@ See `config/examples/` for provider-specific configurations:
 - `config-vllm.json` - vLLM with Qwen3-8B
 - `config_snowflake.json` - Ollama with Snowflake Arctic
 - `config-ollama.json` - Generic Ollama setup
+
+## Memory Management System
+
+The server includes a comprehensive memory management system for storing and retrieving contextual knowledge during development sessions. This is completely separate from code search and uses its own optimized embedding model.
+
+### Key Features
+- **Per-project isolation** - Each project has its own memory database
+- **Hierarchical organization** - Parent-child relationships with tag inheritance
+- **Semantic search** - Natural language queries with relevance scoring
+- **Human-friendly aliases** - Reference memories as `@api-design` instead of numeric IDs
+- **Import/Export** - Convert documentation to/from searchable memory hierarchies
+- **Hardware acceleration** - Uses TensorPrimitives for parallel SIMD operations
+
+### Memory Configuration
+The memory system uses a separate embedding model optimized for general text:
+```json
+{
+  "memory": {
+    "embedding": {
+      "model": "voyage-3-large",  // Default for memories
+      "dimension": 2048,          // Auto-detected if not specified
+      "provider": "VoyageAI"      // Inherits from main config
+    }
+  }
+}
+```
+
+### Example Usage
+```bash
+# Store a memory
+mcp__cstools__memory_add --project myproject --memoryName "API Design Decisions" --content "We chose REST over GraphQL because..." --tags "architecture,api,decisions"
+
+# Search memories
+mcp__cstools__memory_search --project myproject --query "authentication patterns" --topK 5
+
+# View memory hierarchy
+mcp__cstools__memory_get_tree --project myproject --includeContent true
+
+# Import documentation
+mcp__cstools__memory_import_markdown --project myproject --filePath "/path/to/docs.md" --tags "documentation,imported"
+```
 
 ## Limitations
 

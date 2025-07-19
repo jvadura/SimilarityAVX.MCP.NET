@@ -86,6 +86,14 @@ public class EmbeddingCacheStorage : IDisposable
         cmd.Parameters.AddWithValue("@project", projectName ?? (object)DBNull.Value);
         cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
+        // DEBUG: Log the exact SQL and parameters
+        //Console.Error.WriteLine($"[DEBUG] SQL: {cmd.CommandText}");
+        //Console.Error.WriteLine($"[DEBUG] @hash = '{contentHash}' (length: {contentHash.Length})");
+        //Console.Error.WriteLine($"[DEBUG] @type = '{embeddingType}'");
+        //Console.Error.WriteLine($"[DEBUG] @model = '{model}'");
+        //Console.Error.WriteLine($"[DEBUG] @project = '{projectName ?? "NULL"}'");
+        //Console.Error.WriteLine($"[DEBUG] Connection string: {_connectionString}");
+
         var result = await cmd.ExecuteScalarAsync();
         return result as byte[];
     }
@@ -155,17 +163,17 @@ public class EmbeddingCacheStorage : IDisposable
         return await cmd.ExecuteNonQueryAsync();
     }
 
-    public async Task ClearProjectCacheAsync(string projectName)
-    {
-        using var connection = new SqliteConnection(_connectionString);
-        await connection.OpenAsync();
+    //public async Task ClearProjectCacheAsync(string projectName)
+    //{
+    //    using var connection = new SqliteConnection(_connectionString);
+    //    await connection.OpenAsync();
 
-        using var cmd = connection.CreateCommand();
-        cmd.CommandText = "DELETE FROM embedding_cache WHERE project_name = @project";
-        cmd.Parameters.AddWithValue("@project", projectName);
+    //    using var cmd = connection.CreateCommand();
+    //    cmd.CommandText = "DELETE FROM embedding_cache WHERE project_name = @project";
+    //    cmd.Parameters.AddWithValue("@project", projectName);
 
-        await cmd.ExecuteNonQueryAsync();
-    }
+    //    await cmd.ExecuteNonQueryAsync();
+    //}
 
     public void Dispose()
     {

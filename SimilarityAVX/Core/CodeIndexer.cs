@@ -89,12 +89,12 @@ public class CodeIndexer : IDisposable
         
         if (forceReindex)
         {
-            // Clear existing data when force reindexing
+            // Clear existing data when force reindexing (but preserve embedding cache!)
             Console.Error.WriteLine($"[CodeIndexer] Force reindex requested - clearing existing data for project '{_projectName}'");
             _storage.Clear();
             _memoryStore.Clear();
             _synchronizer.ClearState();
-            await _cache.ClearProjectCacheAsync();
+            // NOTE: Deliberately NOT clearing cache - embeddings should persist across runs!
             
             changes = GetAllCsFiles(directory);
         }
@@ -397,8 +397,8 @@ public class CodeIndexer : IDisposable
         _storage.Clear();
         _memoryStore.Clear();
         _synchronizer.ClearState();
-        _cache.ClearProjectCacheAsync().GetAwaiter().GetResult();
-        Console.Error.WriteLine("[CodeIndexer] Index and cache cleared");
+        // NOTE: Deliberately NOT clearing cache - embeddings should persist!
+        Console.Error.WriteLine("[CodeIndexer] Index cleared (cache preserved)");
     }
     
     public IndexStatistics GetStats()

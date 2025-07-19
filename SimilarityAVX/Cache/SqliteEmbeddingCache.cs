@@ -22,7 +22,7 @@ public class SqliteEmbeddingCache : IEmbeddingCacheRepository, IDisposable
     private readonly int _maxMemoryItems;
     private readonly object _lock = new();
 
-    public SqliteEmbeddingCache(string model, string? projectName = null, int maxMemoryItems = 1000)
+    public SqliteEmbeddingCache(string model, string? projectName = null, int maxMemoryItems = 5000)
     {
         _storage = new EmbeddingCacheStorage();
         _model = model;
@@ -100,6 +100,12 @@ public class SqliteEmbeddingCache : IEmbeddingCacheRepository, IDisposable
 
     public async Task ClearProjectCacheAsync()
     {
+        // DISABLED: Cache should NEVER be cleared to preserve API costs!
+        // This method is intentionally disabled to prevent accidental cache clearing.
+        Console.Error.WriteLine("[SqliteEmbeddingCache] ClearProjectCacheAsync called but DISABLED - cache preserved!");
+        await Task.CompletedTask;
+        
+        /* ORIGINAL CODE - DISABLED:
         // Clear memory cache
         lock (_lock)
         {
@@ -111,6 +117,7 @@ public class SqliteEmbeddingCache : IEmbeddingCacheRepository, IDisposable
         {
             await _storage.ClearProjectCacheAsync(_projectName);
         }
+        */
     }
 
     /// <summary>
