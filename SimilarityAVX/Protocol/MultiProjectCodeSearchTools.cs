@@ -265,9 +265,64 @@ public static class MultiProjectCodeSearchTools
                     try
                     {
                         var lines = r.Content.Split('\n');
-                        var numberedLines = lines.Select((line, idx) => 
-                            $"{r.StartLine + idx,4}: {line}");
-                        contentWithLineNumbers = string.Join("\n", numberedLines);
+                        var numberedLines = new List<string>();
+                        
+                        // Track which lines are actual code vs injected context
+                        int actualCodeStartIdx = 0;
+                        
+                        // Common patterns for injected context lines
+                        for (int lineIdx = 0; lineIdx < lines.Length; lineIdx++)
+                        {
+                            var line = lines[lineIdx];
+                            if (line.TrimStart().StartsWith("// In class") ||
+                                line.TrimStart().StartsWith("// In interface") ||
+                                line.TrimStart().StartsWith("// In record") ||
+                                line.TrimStart().StartsWith("// In struct") ||
+                                line.TrimStart().StartsWith("// In type") ||
+                                line.TrimStart().StartsWith("// Local function in method") ||
+                                line.TrimStart().StartsWith("// Property in Razor component"))
+                            {
+                                // This is an injected context line, show without line number
+                                numberedLines.Add($"     {line}");
+                                actualCodeStartIdx = lineIdx + 1;
+                            }
+                            else if (lineIdx < actualCodeStartIdx)
+                            {
+                                // Other non-code lines before actual code (e.g., blank lines after context)
+                                numberedLines.Add($"     {line}");
+                            }
+                            else
+                            {
+                                // This is actual code, use proper line number
+                                var lineNumber = r.StartLine + (lineIdx - actualCodeStartIdx);
+                                numberedLines.Add($"{lineNumber,4}: {line}");
+                            }
+                        }
+                        
+                        // Apply smart truncation for large results
+                        if (numberedLines.Count > 200)
+                        {
+                            var truncatedLines = new List<string>();
+                            
+                            // Add first 100 lines
+                            truncatedLines.AddRange(numberedLines.Take(100));
+                            
+                            // Add truncation message
+                            int truncatedCount = numberedLines.Count - 200;
+                            truncatedLines.Add("");
+                            truncatedLines.Add($"     ... {truncatedCount} lines truncated for display ...");
+                            truncatedLines.Add($"     Use CodeSearchContext or Read tools to view full content.");
+                            truncatedLines.Add("");
+                            
+                            // Add last 100 lines
+                            truncatedLines.AddRange(numberedLines.Skip(numberedLines.Count - 100));
+                            
+                            contentWithLineNumbers = string.Join("\n", truncatedLines);
+                        }
+                        else
+                        {
+                            contentWithLineNumbers = string.Join("\n", numberedLines);
+                        }
                     }
                     catch
                     {
@@ -536,9 +591,64 @@ public static class MultiProjectCodeSearchTools
                     try
                     {
                         var lines = r.Content.Split('\n');
-                        var numberedLines = lines.Select((line, idx) => 
-                            $"{r.StartLine + idx,4}: {line}");
-                        contentWithLineNumbers = string.Join("\n", numberedLines);
+                        var numberedLines = new List<string>();
+                        
+                        // Track which lines are actual code vs injected context
+                        int actualCodeStartIdx = 0;
+                        
+                        // Common patterns for injected context lines
+                        for (int lineIdx = 0; lineIdx < lines.Length; lineIdx++)
+                        {
+                            var line = lines[lineIdx];
+                            if (line.TrimStart().StartsWith("// In class") ||
+                                line.TrimStart().StartsWith("// In interface") ||
+                                line.TrimStart().StartsWith("// In record") ||
+                                line.TrimStart().StartsWith("// In struct") ||
+                                line.TrimStart().StartsWith("// In type") ||
+                                line.TrimStart().StartsWith("// Local function in method") ||
+                                line.TrimStart().StartsWith("// Property in Razor component"))
+                            {
+                                // This is an injected context line, show without line number
+                                numberedLines.Add($"     {line}");
+                                actualCodeStartIdx = lineIdx + 1;
+                            }
+                            else if (lineIdx < actualCodeStartIdx)
+                            {
+                                // Other non-code lines before actual code (e.g., blank lines after context)
+                                numberedLines.Add($"     {line}");
+                            }
+                            else
+                            {
+                                // This is actual code, use proper line number
+                                var lineNumber = r.StartLine + (lineIdx - actualCodeStartIdx);
+                                numberedLines.Add($"{lineNumber,4}: {line}");
+                            }
+                        }
+                        
+                        // Apply smart truncation for large results
+                        if (numberedLines.Count > 200)
+                        {
+                            var truncatedLines = new List<string>();
+                            
+                            // Add first 100 lines
+                            truncatedLines.AddRange(numberedLines.Take(100));
+                            
+                            // Add truncation message
+                            int truncatedCount = numberedLines.Count - 200;
+                            truncatedLines.Add("");
+                            truncatedLines.Add($"     ... {truncatedCount} lines truncated for display ...");
+                            truncatedLines.Add($"     Use CodeSearchContext or Read tools to view full content.");
+                            truncatedLines.Add("");
+                            
+                            // Add last 100 lines
+                            truncatedLines.AddRange(numberedLines.Skip(numberedLines.Count - 100));
+                            
+                            contentWithLineNumbers = string.Join("\n", truncatedLines);
+                        }
+                        else
+                        {
+                            contentWithLineNumbers = string.Join("\n", numberedLines);
+                        }
                     }
                     catch
                     {
@@ -971,6 +1081,47 @@ public static class MultiProjectCodeSearchTools
         return filePath;
     }
     
+    /// <summary>
+    /// Smart truncation for large code displays - shows first N and last N lines
+    /// </summary>
+    private static List<string> SmartTruncateLines(string[] lines, int startLine, int maxDisplayLines = 200, int headLines = 100, int tailLines = 100)
+    {
+        var result = new List<string>();
+        
+        if (lines.Length <= maxDisplayLines)
+        {
+            // No truncation needed
+            for (int i = 0; i < lines.Length; i++)
+            {
+                result.Add($"{startLine + i,4}: {lines[i]}");
+            }
+        }
+        else
+        {
+            // Show first 100 lines
+            for (int i = 0; i < headLines && i < lines.Length; i++)
+            {
+                result.Add($"{startLine + i,4}: {lines[i]}");
+            }
+            
+            // Add truncation message
+            int truncatedLines = lines.Length - headLines - tailLines;
+            result.Add("");
+            result.Add($"     ... {truncatedLines} lines truncated for display ...");
+            result.Add($"     Use CodeSearchContext or Read tools to view full content.");
+            result.Add("");
+            
+            // Show last 100 lines
+            int tailStart = lines.Length - tailLines;
+            for (int i = tailStart; i < lines.Length; i++)
+            {
+                result.Add($"{startLine + i,4}: {lines[i]}");
+            }
+        }
+        
+        return result;
+    }
+    
     private static int GetOptimalContextLines(string chunkType)
     {
         var type = chunkType.ToLowerInvariant();
@@ -1065,49 +1216,92 @@ public static class MultiProjectCodeSearchTools
                     try
                     {
                         var allLines = File.ReadAllLines(result.FilePath);
-                        var startContext = Math.Max(0, result.StartLine - actualContextLines - 1);
-                        var endContext = Math.Min(allLines.Length, result.EndLine + actualContextLines);
                         
-                        sb.AppendLine("```csharp");
-                        
-                        // Show context before
-                        if (startContext < result.StartLine - 1)
+                        // Validate line numbers before using them
+                        if (result.StartLine <= 0 || result.EndLine <= 0 || 
+                            result.StartLine > allLines.Length || result.EndLine > allLines.Length ||
+                            result.StartLine > result.EndLine)
                         {
-                            for (int lineNum = startContext; lineNum < result.StartLine - 1; lineNum++)
-                            {
-                                sb.AppendLine($"{lineNum + 1,4}: {allLines[lineNum]}");
-                            }
-                            if (result.StartLine - startContext > actualContextLines + 1)
-                            {
-                                sb.AppendLine("      // ...");
-                            }
+                            // Invalid line numbers - show warning and chunk content only
+                            sb.AppendLine($"*Warning: Invalid line numbers (Start: {result.StartLine}, End: {result.EndLine}, File lines: {allLines.Length})*");
+                            sb.AppendLine();
+                            sb.AppendLine("```csharp");
+                            sb.AppendLine(result.Content);
+                            sb.AppendLine("```");
                         }
-                        
-                        // Show the matched chunk with highlighting
-                        sb.AppendLine($"      // === MATCH START (lines {result.StartLine}-{result.EndLine}) ===");
-                        for (int lineNum = result.StartLine - 1; lineNum < Math.Min(result.EndLine, allLines.Length); lineNum++)
+                        else
                         {
-                            sb.AppendLine($"{lineNum + 1,4}: {allLines[lineNum]}");
-                        }
-                        sb.AppendLine($"      // === MATCH END ===");
-                        
-                        // Show context after
-                        if (endContext > result.EndLine)
-                        {
-                            if (endContext - result.EndLine > actualContextLines + 1)
+                            var startContext = Math.Max(0, result.StartLine - actualContextLines - 1);
+                            var endContext = Math.Min(allLines.Length, result.EndLine + actualContextLines);
+                            
+                            sb.AppendLine("```csharp");
+                            
+                            // Show context before
+                            if (startContext < result.StartLine - 1)
                             {
-                                sb.AppendLine("      // ...");
+                                for (int lineNum = startContext; lineNum < result.StartLine - 1 && lineNum < allLines.Length; lineNum++)
+                                {
+                                    if (lineNum >= 0) // Extra safety check
+                                    {
+                                        sb.AppendLine($"{lineNum + 1,4}: {allLines[lineNum]}");
+                                    }
+                                }
+                                if (result.StartLine - startContext > actualContextLines + 1)
+                                {
+                                    sb.AppendLine("      // ...");
+                                }
                             }
-                            for (int lineNum = result.EndLine; lineNum < endContext; lineNum++)
+                            
+                            // Show the matched chunk with highlighting
+                            sb.AppendLine($"      // === MATCH START (lines {result.StartLine}-{result.EndLine}) ===");
+                            var matchStartLine = Math.Max(0, result.StartLine - 1); // Ensure non-negative
+                            var matchEndLine = Math.Min(result.EndLine, allLines.Length);
+                            var matchLineCount = matchEndLine - matchStartLine;
+                            
+                            if (matchLineCount > 200) // Apply smart truncation for large chunks
                             {
-                                if (lineNum < allLines.Length)
+                                // Extract the lines for this chunk
+                                var chunkLines = new string[matchLineCount];
+                                for (int lineNum = 0; lineNum < matchLineCount; lineNum++)
+                                {
+                                    chunkLines[lineNum] = allLines[matchStartLine + lineNum];
+                                }
+                                
+                                // Apply smart truncation
+                                var truncatedLines = SmartTruncateLines(chunkLines, matchStartLine + 1);
+                                foreach (var line in truncatedLines)
+                                {
+                                    sb.AppendLine(line);
+                                }
+                            }
+                            else
+                            {
+                                // Small chunk, show all lines
+                                for (int lineNum = matchStartLine; lineNum < matchEndLine; lineNum++)
                                 {
                                     sb.AppendLine($"{lineNum + 1,4}: {allLines[lineNum]}");
                                 }
                             }
+                            sb.AppendLine($"      // === MATCH END ===");
+                            
+                            // Show context after (already has proper bounds checking)
+                            if (endContext > result.EndLine)
+                            {
+                                if (endContext - result.EndLine > actualContextLines + 1)
+                                {
+                                    sb.AppendLine("      // ...");
+                                }
+                                for (int lineNum = result.EndLine; lineNum < endContext; lineNum++)
+                                {
+                                    if (lineNum < allLines.Length)
+                                    {
+                                        sb.AppendLine($"{lineNum + 1,4}: {allLines[lineNum]}");
+                                    }
+                                }
+                            }
+                            
+                            sb.AppendLine("```");
                         }
-                        
-                        sb.AppendLine("```");
                     }
                     catch (Exception readEx)
                     {

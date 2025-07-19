@@ -36,7 +36,7 @@ public class CodeIndexer : IDisposable
         _storage = new SqliteStorage(projectName);
         
         // Configure parsers with options from config
-        _parser = new RoslynParser(config.Parser.IncludeFilePath, config.Parser.IncludeProjectContext);
+        _parser = new RoslynParser(config.Parser.IncludeFilePath, config.Parser.IncludeProjectContext, config.Parser.MaxChunkSize);
         _cParser = new CParser(config.Parser.MaxChunkSize, config.Parser.IncludeFilePath, config.Parser.IncludeProjectContext);
         
         _synchronizer = new FileSynchronizer(config.Performance.MaxDegreeOfParallelism);
@@ -191,10 +191,60 @@ public class CodeIndexer : IDisposable
             
             var chunksToStore = new List<(string id, string path, int start, int end, string content, byte[] embedding, VectorPrecision precision, string chunkType)>();
             
-            for (int i = 0; i < allChunks.Count; i += _batchSize)
+            // Dynamic batching to respect token limits
+            const int maxTokensPerBatch = 120000;
+            const int avgCharsPerToken = 3; // More conservative estimate for code (lots of symbols)
+            const double safetyMargin = 0.8; // Use only 80% of limit for safety
+            const int maxCharsPerBatch = (int)(maxTokensPerBatch * avgCharsPerToken * safetyMargin); // ~288,000 chars
+            
+            int i = 0;
+            while (i < allChunks.Count)
             {
-                var batch = allChunks.Skip(i).Take(_batchSize).ToList();
+                var batch = new List<(CodeChunk chunk, string filePath)>();
+                int currentBatchChars = 0;
+                
+                // Build a batch that respects token limits
+                while (i < allChunks.Count && batch.Count < _batchSize)
+                {
+                    var chunkChars = allChunks[i].chunk.Content.Length;
+                    
+                    // If adding this chunk would exceed limit, stop (unless batch is empty)
+                    if (batch.Count > 0 && currentBatchChars + chunkChars > maxCharsPerBatch)
+                    {
+                        break;
+                    }
+                    
+                    // If single chunk exceeds limit, it needs special handling
+                    if (chunkChars > maxCharsPerBatch)
+                    {
+                        Console.Error.WriteLine($"[CodeIndexer] Warning: Chunk exceeds token limit ({chunkChars} chars). Processing individually.");
+                        // Process this single large chunk alone
+                        if (batch.Count > 0)
+                        {
+                            break; // Process current batch first
+                        }
+                        batch.Add(allChunks[i]);
+                        i++;
+                        break; // Process this single chunk
+                    }
+                    
+                    batch.Add(allChunks[i]);
+                    currentBatchChars += chunkChars;
+                    i++;
+                }
+                
+                if (batch.Count == 0)
+                {
+                    continue; // Safety check
+                }
+                
                 var texts = batch.Select(c => c.chunk.Content).ToArray();
+                
+                // Log batch info for debugging
+                if (batch.Count < _batchSize || currentBatchChars > maxCharsPerBatch * 0.8)
+                {
+                    Console.Error.WriteLine($"[CodeIndexer] Processing batch: {batch.Count} chunks, ~{currentBatchChars / 1000}K chars, ~{currentBatchChars / avgCharsPerToken} tokens");
+                }
                 
                 try
                 {
@@ -232,7 +282,7 @@ public class CodeIndexer : IDisposable
                 progress?.Report(new IndexProgress 
                 { 
                     Phase = "Getting embeddings", 
-                    Current = Math.Min(i + _batchSize, allChunks.Count), 
+                    Current = totalChunks, 
                     Total = allChunks.Count 
                 });
             }

@@ -53,7 +53,7 @@ else
     }
     
     Console.Error.WriteLine("Server will listen on http://*:5001/sse");
-    Console.Error.WriteLine("Add to Claude Desktop with: claude mcp add csharp-search --transport sse http://YOUR_IP:5001/sse");
+    Console.Error.WriteLine("Add to Claude Desktop with: claude mcp add cstools --transport sse http://YOUR_IP:5001/sse");
     
     var builder = WebApplication.CreateBuilder(args);
     

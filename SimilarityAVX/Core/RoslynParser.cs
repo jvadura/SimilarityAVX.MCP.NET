@@ -11,14 +11,15 @@ namespace CSharpMcpServer.Core;
 
 public class RoslynParser
 {
-    private const int MaxChunkSize = 2000; // Reasonable size for embeddings
+    private readonly int MaxChunkSize;
     private readonly bool _includeFilePath;
     private readonly bool _includeProjectContext;
     
-    public RoslynParser(bool includeFilePath = false, bool includeProjectContext = false)
+    public RoslynParser(bool includeFilePath = false, bool includeProjectContext = false, int maxChunkSize = 100000)
     {
         _includeFilePath = includeFilePath;
         _includeProjectContext = includeProjectContext;
+        MaxChunkSize = maxChunkSize;
     }
     
     public List<CodeChunk> ParseFile(string filePath)
@@ -58,19 +59,9 @@ public class RoslynParser
                 chunks.Add(CreateChunk(globalUsingContent, globalUsings.First(), filePath, "global_usings"));
             }
             
-            // Extract namespace declarations
-            foreach (var ns in root.DescendantNodes().OfType<NamespaceDeclarationSyntax>())
-            {
-                var nsContent = GetNamespaceSignature(ns);
-                chunks.Add(CreateChunk(nsContent, ns, filePath, "namespace"));
-            }
-            
-            // Extract file-scoped namespace declarations (.NET 6+)
-            foreach (var ns in root.DescendantNodes().OfType<FileScopedNamespaceDeclarationSyntax>())
-            {
-                var nsContent = $"namespace {ns.Name};";
-                chunks.Add(CreateChunk(nsContent, ns, filePath, "namespace"));
-            }
+            // NOTE: Namespace-only chunks removed - namespace information is already included
+            // in class, method, and other code chunks through context injection.
+            // This reduces index size and improves search relevance.
             
             // Extract classes with documentation
             foreach (var cls in root.DescendantNodes().OfType<ClassDeclarationSyntax>())
@@ -179,15 +170,6 @@ public class RoslynParser
                 return new List<CodeChunk>();
             }
         }
-    }
-    
-    private string GetNamespaceSignature(NamespaceDeclarationSyntax ns)
-    {
-        var usings = ns.Usings.Select(u => u.ToString()).ToList();
-        var content = string.Join("\n", usings);
-        if (usings.Any()) content += "\n\n";
-        content += $"namespace {ns.Name}";
-        return content;
     }
     
     private string GetClassContext(ClassDeclarationSyntax cls)
@@ -1011,7 +993,7 @@ public class RoslynParser
                     foreach (var method in codeRoot.DescendantNodes().OfType<MethodDeclarationSyntax>())
                     {
                         var methodContent = GetRazorMethodWithContext(method, filePath);
-                        chunks.Add(CreateRazorChunk(methodContent, method, filePath, "razor-method", codeIndex));
+                        chunks.Add(CreateRazorChunk(methodContent, method, filePath, "razor-method", codeIndex, sectionStartLine));
                         codeIndex++;
                     }
                     
@@ -1019,15 +1001,15 @@ public class RoslynParser
                     foreach (var prop in codeRoot.DescendantNodes().OfType<PropertyDeclarationSyntax>())
                     {
                         var propContent = GetRazorPropertyWithContext(prop, filePath);
-                        chunks.Add(CreateRazorChunk(propContent, prop, filePath, "razor-property", codeIndex));
+                        chunks.Add(CreateRazorChunk(propContent, prop, filePath, "razor-property", codeIndex, sectionStartLine));
                         codeIndex++;
                     }
                     
                     // Extract fields from code sections
                     foreach (var field in codeRoot.DescendantNodes().OfType<FieldDeclarationSyntax>())
                     {
-                        var fieldContent = $"// In {Path.GetFileName(filePath)}\n{field.ToString().Trim()}";
-                        chunks.Add(CreateRazorChunk(fieldContent, field, filePath, "razor-field", codeIndex));
+                        var fieldContent = field.ToString().Trim();
+                        chunks.Add(CreateRazorChunk(fieldContent, field, filePath, "razor-field", codeIndex, sectionStartLine));
                         codeIndex++;
                     }
                     
@@ -1208,8 +1190,6 @@ public class RoslynParser
     {
         var parts = new List<string>();
         
-        parts.Add($"// Property in Razor component {Path.GetFileName(filePath)}");
-        
         // Add any XML documentation
         var xmlDocs = GetXmlDocumentation(prop);
         if (!string.IsNullOrWhiteSpace(xmlDocs))
@@ -1217,7 +1197,7 @@ public class RoslynParser
             parts.Add(xmlDocs.Trim());
         }
         
-        // Add the property
+        // Add the property (includes attributes)
         parts.Add(prop.ToFullString().Trim());
         
         return string.Join("\n", parts);
@@ -1227,8 +1207,32 @@ public class RoslynParser
     {
         var lineSpan = node.GetLocation().GetLineSpan();
         // Add the section's start line offset to get the actual file line numbers
-        var startLine = lineSpan.StartLinePosition.Line + sectionStartLine;
-        var endLine = lineSpan.EndLinePosition.Line + sectionStartLine;
+        // Note: lineSpan is 0-based, sectionStartLine is 1-based from ParseRazorFile
+        // Need to add 1 to convert from 0-based to 1-based line numbers
+        var startLine = lineSpan.StartLinePosition.Line + 1 + sectionStartLine;
+        var endLine = lineSpan.EndLinePosition.Line + 1 + sectionStartLine;
+        
+        // Validate line numbers
+        if (startLine <= 0)
+        {
+            // Log warning and adjust to minimum valid line number
+            Console.WriteLine($"Warning: Invalid start line {startLine} for {chunkType} in {filePath}. Adjusting to 1.");
+            startLine = 1;
+        }
+        
+        if (endLine < startLine)
+        {
+            // Log warning and adjust end line
+            Console.WriteLine($"Warning: Invalid end line {endLine} < start line {startLine} for {chunkType} in {filePath}. Adjusting to match start line.");
+            endLine = startLine;
+        }
+        
+        // Additional validation: Check if line numbers seem reasonable
+        // Most Razor files won't exceed 10000 lines
+        if (startLine > 10000 || endLine > 10000)
+        {
+            Console.WriteLine($"Warning: Suspicious line numbers (start: {startLine}, end: {endLine}) for {chunkType} in {filePath}");
+        }
         
         // Ensure content isn't too large
         if (content.Length > MaxChunkSize)

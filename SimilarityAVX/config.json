@@ -12,7 +12,8 @@
   },
   "parser": {
     "includeFilePath": false,
-    "includeProjectContext": false
+    "includeProjectContext": false,
+    "maxChunkSize": 100000
   },
   "performance": {
     "enableAvx512": "Auto",

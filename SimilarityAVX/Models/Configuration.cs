@@ -171,7 +171,7 @@ public class ParserConfig
     public bool IncludeProjectContext { get; set; } = false;
     
     [JsonPropertyName("maxChunkSize")]
-    public int MaxChunkSize { get; set; } = 2000;
+    public int MaxChunkSize { get; set; } = 100000;
     
     [JsonPropertyName("enableSlidingWindow")]
     public bool EnableSlidingWindow { get; set; } = true;
