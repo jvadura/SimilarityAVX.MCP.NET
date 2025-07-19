@@ -548,7 +548,7 @@ public class RoslynParser
         var header = new System.Text.StringBuilder();
         header.AppendLine($"// Method body chunk {chunkIndex} from: {methodSignature}");
         header.AppendLine($"// Class: {containingClass}");
-        header.AppendLine($"// Body lines: {totalBodyLines} total");
+        //header.AppendLine($"// Body lines: {totalBodyLines} total");
         header.AppendLine();
         return header.ToString();
     }

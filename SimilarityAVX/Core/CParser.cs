@@ -13,12 +13,14 @@ namespace CSharpMcpServer.Core
         private readonly int _maxChunkSize;
         private readonly bool _includeFilePath;
         private readonly bool _includeProjectContext;
+        private readonly SlidingWindowConfig _slidingWindowConfig;
 
-        public CParser(int maxChunkSize = 2000, bool includeFilePath = true, bool includeProjectContext = false)
+        public CParser(int maxChunkSize = 100000, bool includeFilePath = true, bool includeProjectContext = false, SlidingWindowConfig? slidingWindowConfig = null)
         {
             _maxChunkSize = maxChunkSize;
             _includeFilePath = includeFilePath;
             _includeProjectContext = includeProjectContext;
+            _slidingWindowConfig = slidingWindowConfig ?? new SlidingWindowConfig();
         }
 
         public List<CodeChunk> ParseFile(string filePath)
@@ -334,7 +336,23 @@ namespace CSharpMcpServer.Core
                     var functionChunk = ExtractFunctionBody(lines, i, filePath);
                     if (functionChunk != null)
                     {
-                        chunks.Add(functionChunk);
+                        // Check if this is a large function that needs smart chunking
+                        var functionContent = functionChunk.Content;
+                        var functionName = ExtractFunctionName(lines[i].Trim());
+                        
+                        if (functionContent.Length > _slidingWindowConfig.TargetChunkSize)
+                        {
+                            // Create multiple chunks for large function
+                            var functionChunks = CreateFunctionChunks(functionContent, functionName, filePath, 
+                                                                    functionChunk.StartLine, functionChunk.EndLine);
+                            chunks.AddRange(functionChunks);
+                        }
+                        else
+                        {
+                            // Single chunk for normal-sized function
+                            chunks.Add(functionChunk);
+                        }
+                        
                         i = functionChunk.EndLine;
                     }
                 }
@@ -404,19 +422,41 @@ namespace CSharpMcpServer.Core
                     break;
                 }
                 
-                // Limit chunk size
+                // Check if we should create multiple chunks for large functions
+                if (sb.Length > _slidingWindowConfig.TargetChunkSize && !inBody)
+                {
+                    // We haven't started the function body yet, continue to find it
+                    continue;
+                }
+                
+                // For very large functions, we'll handle smart chunking separately
                 if (sb.Length > _maxChunkSize)
                 {
-                    endIndex = i;
-                    break;
+                    // Smart truncation - keep signature and beginning of function
+                    var truncatedContent = SmartTruncateFunction(sb.ToString(), functionName);
+                    var tempChunkType = DetermineChunkType("c-function", functionName);
+                    return new CodeChunk(
+                        $"{filePath}:{startIndex + 1}",
+                        truncatedContent,
+                        _includeFilePath ? filePath : Path.GetFileName(filePath),
+                        startIndex + 1,
+                        i + 1,
+                        tempChunkType);
                 }
             }
             
             var chunkType = DetermineChunkType("c-function", functionName);
+            var functionContent = sb.ToString().Trim();
+            
+            // For large functions, create multiple chunks
+            if (functionContent.Length > _slidingWindowConfig.TargetChunkSize)
+            {
+                return CreateFunctionChunks(functionContent, functionName, filePath, startIndex + 1, endIndex + 1)[0];
+            }
             
             return new CodeChunk(
                 $"{filePath}:{startIndex + 1}",
-                sb.ToString().Trim(),
+                functionContent,
                 _includeFilePath ? filePath : Path.GetFileName(filePath),
                 startIndex + 1, // Convert to 1-based
                 endIndex + 1,
@@ -663,6 +703,191 @@ namespace CSharpMcpServer.Core
                 return parts[1].Split('(')[0]; // Handle function-like macros
             }
             return string.Empty;
+        }
+
+        /// <summary>
+        /// Create multiple chunks for a large C function (similar to Roslyn parser approach)
+        /// </summary>
+        private List<CodeChunk> CreateFunctionChunks(string functionContent, string functionName, string filePath, int startLine, int endLine)
+        {
+            var chunks = new List<CodeChunk>();
+            var chunkType = DetermineChunkType("c-function", functionName);
+            
+            // Always create primary function chunk (complete function with smart truncation if needed)
+            var primaryChunk = functionContent.Length > _maxChunkSize 
+                ? SmartTruncateFunction(functionContent, functionName)
+                : functionContent;
+                
+            chunks.Add(new CodeChunk(
+                $"{filePath}:{startLine}",
+                primaryChunk,
+                _includeFilePath ? filePath : Path.GetFileName(filePath),
+                startLine,
+                endLine,
+                chunkType));
+            
+            // For large functions, also create sliding window chunks of the function body
+            if (functionContent.Length > _slidingWindowConfig.TargetChunkSize)
+            {
+                var bodyChunks = CreateFunctionBodyChunks(functionContent, functionName, filePath, startLine);
+                chunks.AddRange(bodyChunks);
+            }
+            
+            return chunks;
+        }
+
+        /// <summary>
+        /// Create sliding window chunks for the body of a large C function
+        /// </summary>
+        private List<CodeChunk> CreateFunctionBodyChunks(string functionContent, string functionName, string filePath, int startLine)
+        {
+            var chunks = new List<CodeChunk>();
+            var lines = functionContent.Split('\n');
+            var targetSize = _slidingWindowConfig.TargetChunkSize;
+            
+            // Find function body start (after opening brace)
+            int bodyStartLine = 0;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                if (lines[i].Contains("{"))
+                {
+                    bodyStartLine = i + 1;
+                    break;
+                }
+            }
+            
+            if (bodyStartLine >= lines.Length - 1) return chunks; // No meaningful body
+            
+            // Create overlapping chunks of the function body
+            var bodyLines = lines.Skip(bodyStartLine).ToArray();
+            int currentLine = bodyStartLine;
+            
+            while (currentLine < bodyLines.Length)
+            {
+                var chunkLines = new List<string>();
+                var currentSize = 0;
+                var startLineInChunk = currentLine;
+                
+                // Add lines until we reach target size or end of function
+                while (currentLine < bodyLines.Length && currentSize < targetSize)
+                {
+                    var line = bodyLines[currentLine - bodyStartLine];
+                    chunkLines.Add(line);
+                    currentSize += line.Length + 1; // +1 for newline
+                    currentLine++;
+                    
+                    // Stop at natural breaking points for better chunking
+                    if (currentSize > targetSize * 0.8 && IsGoodFunctionBreakingPoint(line))
+                    {
+                        break;
+                    }
+                }
+                
+                if (chunkLines.Count == 0) break;
+                
+                // Create context header for the body chunk
+                var contextHeader = CreateFunctionBodyContextHeader(functionName, chunkLines.Count, startLineInChunk + startLine);
+                var chunkContent = contextHeader + "\n" + string.Join("\n", chunkLines);
+                
+                chunks.Add(new CodeChunk(
+                    $"{filePath}:{startLineInChunk + startLine}",
+                    chunkContent,
+                    _includeFilePath ? filePath : Path.GetFileName(filePath),
+                    startLineInChunk + startLine,
+                    currentLine + startLine - 1,
+                    "c-function-body"));
+                
+                // Calculate overlap for next chunk
+                var overlapLines = Math.Min(
+                    (int)(chunkLines.Count * _slidingWindowConfig.OverlapPercentage), 
+                    _slidingWindowConfig.MaxOverlapLines);
+                currentLine = Math.Max(startLineInChunk + 1, currentLine - overlapLines);
+                
+                // Prevent infinite loops
+                if (currentLine <= startLineInChunk)
+                {
+                    currentLine = startLineInChunk + Math.Max(1, chunkLines.Count / 2);
+                }
+            }
+            
+            return chunks;
+        }
+
+        /// <summary>
+        /// Smart truncation for large C functions - preserves signature and beginning
+        /// </summary>
+        private string SmartTruncateFunction(string functionContent, string functionName)
+        {
+            if (functionContent.Length <= _maxChunkSize)
+                return functionContent;
+            
+            var lines = functionContent.Split('\n');
+            var sb = new StringBuilder();
+            var currentSize = 0;
+            var preserveLines = Math.Min(lines.Length, 50); // Preserve at least first 50 lines
+            
+            // Always include function signature and opening brace
+            for (int i = 0; i < preserveLines && currentSize < _maxChunkSize * 0.9; i++)
+            {
+                sb.AppendLine(lines[i]);
+                currentSize += lines[i].Length + 1;
+            }
+            
+            // Add truncation indicator
+            sb.AppendLine();
+            sb.AppendLine($"    // Function body truncated for embedding (original: {lines.Length} lines, {functionContent.Length} chars)");
+            sb.AppendLine($"    // Use semantic search to find specific implementation details within this function");
+            sb.AppendLine("    // ...");
+            
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Create context header for function body chunks
+        /// </summary>
+        private string CreateFunctionBodyContextHeader(string functionName, int bodyLines, int startLine)
+        {
+            return $"// Function body chunk from: {functionName}\n" +
+                   $"// Body lines: {bodyLines} total\n";
+        }
+
+        /// <summary>
+        /// Identify good breaking points in C function bodies for better chunking
+        /// </summary>
+        private bool IsGoodFunctionBreakingPoint(string line)
+        {
+            var trimmed = line.Trim();
+            
+            // Control flow statements
+            if (trimmed.StartsWith("if ") || trimmed.StartsWith("else") || 
+                trimmed.StartsWith("for ") || trimmed.StartsWith("while ") ||
+                trimmed.StartsWith("switch ") || trimmed.StartsWith("case ") ||
+                trimmed.StartsWith("break;") || trimmed.StartsWith("continue;") ||
+                trimmed.StartsWith("return"))
+                return true;
+            
+            // Function calls and declarations
+            if (trimmed.Contains("(") && trimmed.EndsWith(";"))
+                return true;
+            
+            // Variable declarations
+            if (trimmed.Contains(" = ") && trimmed.EndsWith(";"))
+                return true;
+            
+            // Block boundaries
+            if (trimmed == "{" || trimmed == "}" || trimmed.EndsWith("{"))
+                return true;
+            
+            // Comments and empty lines
+            if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith("//") || 
+                trimmed.StartsWith("/*") || trimmed.StartsWith("*"))
+                return true;
+            
+            // Preprocessor directives
+            if (trimmed.StartsWith("#"))
+                return true;
+            
+            return false;
         }
     }
 }
