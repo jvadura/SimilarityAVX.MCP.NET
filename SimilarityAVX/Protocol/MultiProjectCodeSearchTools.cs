@@ -75,7 +75,7 @@ public static class MultiProjectCodeSearchTools
     
     [McpServerTool]
     [Description("Index a C# or C codebase for semantic search. Processes .cs, .razor, .cshtml, .c, .h files. Creates isolated project database. Supports incremental updates - only changed files are re-indexed. First indexing takes ~1 second per 100 files.")]
-    public static async Task<string> IndexProject(
+    public static async Task<string> CodeIndex(
         [Description("Unique project identifier (e.g., 'frontend', 'backend-api', 'shared-lib')")] string project,
         [Description("Absolute path to the project root directory. WSL paths are automatically converted.")] string directory,
         [Description("Force complete re-indexing of all files. Use when switching models or after major changes.")] bool force = false)
@@ -232,7 +232,7 @@ public static class MultiProjectCodeSearchTools
     
     [McpServerTool]
     [Description("Search code using natural language queries. Returns relevance-scored results (0.0-1.0). Best for: conceptual searches ('email notifications'), UI components, business logic. Score thresholds vary by embedding model (Qwen3: 0.45+, Voyage: 0.40+). For finding ALL instances, use traditional grep/glob tools.")]
-    public static async Task<string> SearchProject(
+    public static async Task<string> CodeSearch(
         [Description("Project name to search (must match name used in IndexProject)")] string project,
         [Description("Natural language query. Be specific for better results: 'email validation in registration' > 'validation'")] string query,
         [Description("Maximum results to return (1-20, default 5)")] int limit = 5)
@@ -303,7 +303,7 @@ public static class MultiProjectCodeSearchTools
     
     [McpServerTool]
     [Description("Delete all indexed data for a specific project. Removes database and frees memory. This operation is irreversible.")]
-    public static string ClearProjectIndex(
+    public static string CodeClearIndex(
         [Description("Project name to completely remove from the index")] string project)
     {
         try
@@ -325,7 +325,7 @@ public static class MultiProjectCodeSearchTools
     
     [McpServerTool]
     [Description("Display index statistics: chunk count, memory usage (MB), vector dimensions, and CPU acceleration method (AVX-512/AVX2).")]
-    public static string GetProjectStats(
+    public static string CodeGetStats(
         [Description("Project name to analyze")] string project)
     {
         try
@@ -354,7 +354,7 @@ public static class MultiProjectCodeSearchTools
     
     [McpServerTool]
     [Description("List all indexed projects with database sizes and last modification times.")]
-    public static string ListProjects()
+    public static string CodeListProjects()
     {
         try
         {
@@ -400,7 +400,7 @@ public static class MultiProjectCodeSearchTools
     
     [McpServerTool]
     [Description("Get the project root directory for an indexed project by analyzing file paths in the database.")]
-    public static string GetProjectDirectory(
+    public static string CodeGetDirectory(
         [Description("Project name to get directory for")] string project)
     {
         try
@@ -449,8 +449,8 @@ public static class MultiProjectCodeSearchTools
     }
     */
     [McpServerTool]
-    [Description("Search with filters for precise results. Filter by file types and code structures. Common uses: async methods (chunkTypes='method'), auth code (chunkTypes='method-auth,class-auth'), Blazor components (fileTypes='razor'). Enhanced auth/security detection available. Use GetFilterHelp for complete list.")]
-    public static async Task<string> SearchWithFilters(
+    [Description("Search with filters for precise results. Filter by file types and code structures. Common uses: async methods (chunkTypes='method'), auth code (chunkTypes='method-auth,class-auth'), Blazor components (fileTypes='razor'). Enhanced auth/security detection available. Use CodeGetFilterHelp for complete list.")]
+    public static async Task<string> CodeSearchFiltered(
         [Description("Project name to search")] string project,
         [Description("Natural language description of code you're looking for")] string query,
         [Description("File extensions to filter (comma-separated: 'cs', 'razor', 'cshtml', 'c', 'h'). Empty = all files.")] string? fileTypes = null,
@@ -1005,7 +1005,7 @@ public static class MultiProjectCodeSearchTools
     
     [McpServerTool]
     [Description("Search with extended context window (±1-20 lines). Shows line numbers for easy navigation. Essential for understanding complex business logic, authentication flows, or algorithm implementations. Default 15 lines provides good context.")]
-    public static async Task<string> SearchWithContext(
+    public static async Task<string> CodeSearchContext(
         [Description("Project name to search")] string project,
         [Description("Natural language description of code you're looking for")] string query,
         [Description("Number of context lines before and after the match (1-20). Default: 15")] int contextLines = 15,
@@ -1314,7 +1314,7 @@ public static class MultiProjectCodeSearchTools
     */
     [McpServerTool]
     [Description("Batch search multiple related queries efficiently. Ideal for exploring features or understanding implementations. Shows cross-references between results. More efficient than individual searches. Best with 3-5 related queries.")]
-    public static async Task<string> BatchSearch(
+    public static async Task<string> CodeBatchSearch(
         [Description("Project name to search")] string project,
         [Description("Comma-separated queries to search for. Example: 'login,authentication,session'")] string queries,
         [Description("Maximum results per query (1-5, default 3)")] int limitPerQuery = 3)
@@ -1472,8 +1472,8 @@ public static class MultiProjectCodeSearchTools
     }
     
     [McpServerTool]
-    [Description("Show all available search filters, chunk types, file types, examples, and score interpretation. Essential reference for SearchWithFilters.")]
-    public static string GetFilterHelp()
+    [Description("Show all available search filters, chunk types, file types, examples, and score interpretation. Essential reference for CodeSearchFiltered.")]
+    public static string CodeGetFilterHelp()
     {
         var sb = new StringBuilder();
         

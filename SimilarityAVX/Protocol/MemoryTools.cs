@@ -33,7 +33,7 @@ namespace CSharpMcpServer.Protocol
         /// </summary>
         [McpServerTool]
         [Description("Store a new memory with tags and metadata. Memories are persistent knowledge entries that can be searched semantically. Each memory is project-specific and includes timestamps for temporal context.")]
-        public async Task<object> AddMemory(
+        public async Task<object> MemoryAdd(
             [Description("Unique project identifier for memory isolation")] string project,
             [Description("Descriptive name for the memory (e.g., 'API Design Decisions', 'User Requirements')")] string memoryName,
             [Description("Full text content of the memory. Can be multiple paragraphs or structured text.")] string content,
@@ -83,7 +83,7 @@ namespace CSharpMcpServer.Protocol
         /// </summary>
         [McpServerTool]
         [Description("Update an existing memory's name, content, or tags. Accepts memory ID or alias. When content is updated, the embedding is regenerated. Returns the updated memory with new metadata.")]
-        public async Task<object> UpdateMemory(
+        public async Task<object> MemoryUpdate(
             [Description("Project name")] string project,
             [Description("The unique ID or alias of the memory to update (e.g., 42 or 'api-design')")] string memoryIdOrAlias,
             [Description("New memory name (null to keep existing)")] string? newName = null,
@@ -162,7 +162,7 @@ namespace CSharpMcpServer.Protocol
         /// </summary>
         [McpServerTool]
         [Description("Delete a memory by its ID or alias. This permanently removes the memory and its embeddings from the system.")]
-        public async Task<object> DeleteMemory(
+        public async Task<object> MemoryDelete(
             [Description("Project name")] string project,
             [Description("The unique ID or alias of the memory to delete (e.g., 42 or 'api-design')")] string memoryIdOrAlias)
         {
@@ -212,7 +212,7 @@ namespace CSharpMcpServer.Protocol
         /// </summary>
         [McpServerTool]
         [Description("Retrieve the full content of a memory by its ID or alias. Accepts either integer ID (e.g., 42) or alias string (e.g., 'api-design'). Returns memory object with id, name, alias, content, tags, age, timestamp, metadata (linesCount, sizeKB), parentMemoryId, and optional parent/children objects when requested. Returns status: 'not_found' if memory doesn't exist.")]
-        public async Task<object> GetMemory(
+        public async Task<object> MemoryGet(
             [Description("Project name")] string project,
             [Description("The unique ID or alias of the memory to retrieve (e.g., 42 or 'api-design')")] string memoryIdOrAlias,
             [Description("Include child memories in response (default: true)")] bool includeChildren = true,
@@ -301,7 +301,7 @@ namespace CSharpMcpServer.Protocol
         /// </summary>
         [McpServerTool]
         [Description("Search memories using natural language queries with advanced filtering options. Returns top matches with similarity scores (0.0-1.0, higher = more similar), snippets, and metadata. Supports filtering by tags, date ranges, parent/child relationships, and score thresholds. Results are sorted by score (highest first).")]
-        public async Task<object> SearchMemories(
+        public async Task<object> MemorySearch(
             [Description("Project name to search within")] string project,
             [Description("Natural language search query (e.g., 'authentication flow', 'API design decisions')")] string query,
             [Description("Number of top results to return (default: 3)")] int topK = 3,
@@ -378,7 +378,7 @@ namespace CSharpMcpServer.Protocol
         /// </summary>
         [McpServerTool]
         [Description("List all memories stored in a project. Returns memory objects with id, name, tags, age, linesCount, sizeKB, hasParent (boolean), and childCount (number of direct children). Useful for understanding memory hierarchy and organization.")]
-        public async Task<object> ListMemories(
+        public async Task<object> MemoryList(
             [Description("Project name")] string project,
             [Description("Optional tag filter (comma-separated)")] string? filterTags = null)
         {
@@ -427,7 +427,7 @@ namespace CSharpMcpServer.Protocol
         /// </summary>
         [McpServerTool]
         [Description("Append content to an existing memory as a child memory. When inheritParentTags=true (default), parent tags are automatically included. Additional tags can be provided and will be merged with inherited tags. Duplicate tags are automatically deduplicated.")]
-        public async Task<object> AppendToMemory(
+        public async Task<object> MemoryAppend(
             [Description("Project name")] string project,
             [Description("The ID or alias of the parent memory to append to (e.g., 42 or 'api-design')")] string parentMemoryIdOrAlias,
             [Description("Descriptive name for the child memory")] string childMemoryName,
@@ -509,7 +509,7 @@ namespace CSharpMcpServer.Protocol
         /// </summary>
         [McpServerTool]
         [Description("Get comprehensive memory system statistics including: memoryCount, vectorStats (vectorCount, dimension, memoryUsageMB, precision, searchMethod), contentStats (totalSizeKB, totalLines, averages), topTags (most frequent tags with counts), and graphStats (parent-child relationship counts).")]
-        public async Task<object> GetMemoryStats(
+        public async Task<object> MemoryGetStats(
             [Description("Project name")] string project)
         {
             try
@@ -570,7 +570,7 @@ namespace CSharpMcpServer.Protocol
         /// </summary>
         [McpServerTool]
         [Description("Import markdown file as memory hierarchy using headers. Headers (#, ##, ###, ####) create parent-child relationships. Each section becomes a memory with its content. Headers become memory names, content below headers becomes memory content.")]
-        public async Task<object> ImportMarkdownAsMemories(
+        public async Task<object> MemoryImportMarkdown(
             [Description("Project name")] string project,
             [Description("Path to markdown file")] string filePath,
             [Description("Optional parent memory ID to attach imported hierarchy to")] int? parentMemoryId = null,
@@ -723,7 +723,7 @@ namespace CSharpMcpServer.Protocol
         /// </summary>
         [McpServerTool]
         [Description("Display memory tree structure with ASCII visualization. Shows hierarchical relationships between memories with IDs, aliases, names, and optionally content. Tree uses box-drawing characters for clear visualization.")]
-        public async Task<object> GetMemoryTree(
+        public async Task<object> MemoryGetTree(
             [Description("Project name")] string project,
             [Description("Root memory ID or alias (null = show all root memories)")] string? rootMemoryIdOrAlias = null,
             [Description("Maximum depth to display (default: 5)")] int maxDepth = 5,
@@ -893,11 +893,11 @@ namespace CSharpMcpServer.Protocol
         /// Export memory tree as structured markdown
         /// </summary>
         [McpServerTool]
-        [Description("Export memory tree as structured markdown or other formats. Converts memory hierarchies into documentation with proper formatting. Supports markdown, JSON, and YAML formats. Preserves hierarchy through header levels in markdown or nested structures in JSON/YAML.")]
-        public async Task<object> ExportMemoryTree(
+        [Description("Export memory tree as structured markdown or other formats. Converts memory hierarchies into documentation with proper formatting. Supports markdown and JSON formats. Preserves hierarchy through header levels in markdown or nested structures in JSON.")]
+        public async Task<object> MemoryExportTree(
             [Description("Project name")] string project,
             [Description("Root memory ID or alias (null = export all)")] string? rootMemoryIdOrAlias = null,
-            [Description("Output format: markdown, json, or yaml (default: markdown)")] string format = "markdown",
+            [Description("Output format: markdown or json (default: markdown)")] string format = "markdown",
             [Description("Include full memory content (default: true)")] bool includeContent = true,
             [Description("Maximum depth to export (default: 10)")] int maxDepth = 10,
             [Description("Include metadata (timestamps, tags) in export (default: true)")] bool includeMetadata = true)
