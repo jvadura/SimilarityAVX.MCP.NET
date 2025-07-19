@@ -89,8 +89,8 @@ public class RoslynParser
             // Extract methods with their containing class context
             foreach (var method in root.DescendantNodes().OfType<MethodDeclarationSyntax>())
             {
-                var methodChunk = GetMethodWithContext(method);
-                chunks.Add(CreateChunk(methodChunk, method, filePath, "method"));
+                var methodChunks = GetMethodChunks(method, filePath);
+                chunks.AddRange(methodChunks);
             }
             
             // Extract properties with context (including expression-bodied)
@@ -337,6 +337,25 @@ public class RoslynParser
         return recordDecl + ";";
     }
     
+    private List<CodeChunk> GetMethodChunks(MethodDeclarationSyntax method, string filePath)
+    {
+        var chunks = new List<CodeChunk>();
+        var methodStr = method.ToFullString().Trim();
+        
+        // Always create the primary method chunk (with smart truncation if needed)
+        var primaryMethodChunk = GetMethodWithContext(method);
+        chunks.Add(CreateChunk(primaryMethodChunk, method, filePath, "method"));
+        
+        // For large methods, also create sliding window chunks of the method body
+        if (methodStr.Length > _slidingWindowConfig.TargetChunkSize)
+        {
+            var bodyChunks = CreateMethodBodyChunks(method, filePath);
+            chunks.AddRange(bodyChunks);
+        }
+        
+        return chunks;
+    }
+    
     private string GetMethodWithContext(MethodDeclarationSyntax method)
     {
         var containingType = method.Ancestors()
@@ -432,6 +451,143 @@ public class RoslynParser
         }
         
         return string.Join("\n", parts);
+    }
+    
+    private List<CodeChunk> CreateMethodBodyChunks(MethodDeclarationSyntax method, string filePath)
+    {
+        var chunks = new List<CodeChunk>();
+        var methodBody = method.Body?.ToString();
+        
+        if (string.IsNullOrEmpty(methodBody))
+        {
+            return chunks; // No body to chunk (e.g., abstract methods, interface methods)
+        }
+        
+        // Get method context for each chunk
+        var containingType = method.Ancestors()
+            .FirstOrDefault(a => a is TypeDeclarationSyntax) as TypeDeclarationSyntax;
+        var methodSignature = $"{method.Modifiers} {method.ReturnType} {method.Identifier}{method.ParameterList}";
+        var containingClass = containingType?.Identifier.ToString() ?? "UnknownClass";
+        
+        // Split method body into lines
+        var bodyLines = methodBody.Split('\n');
+        var targetChunkSize = _slidingWindowConfig.TargetChunkSize;
+        var overlapPercentage = _slidingWindowConfig.OverlapPercentage;
+        
+        var currentLine = 0;
+        var chunkIndex = 1;
+        
+        while (currentLine < bodyLines.Length)
+        {
+            var chunkLines = new List<string>();
+            var currentSize = 0;
+            var startLine = currentLine;
+            
+            // Reserve space for method context header (signature, class info)
+            var contextHeader = BuildMethodChunkHeader(methodSignature, containingClass, chunkIndex, bodyLines.Length);
+            var headerSize = contextHeader.Length;
+            var availableSpace = targetChunkSize - headerSize;
+            
+            // Build chunk content respecting size limits
+            while (currentLine < bodyLines.Length && currentSize < availableSpace)
+            {
+                var line = bodyLines[currentLine];
+                var lineSize = line.Length + 1; // +1 for newline
+                
+                // Check for good breaking points when approaching limit
+                if (currentSize + lineSize > availableSpace && chunkLines.Count > 0)
+                {
+                    if (IsGoodMethodBreakingPoint(line) || currentSize > availableSpace * 0.8)
+                    {
+                        break;
+                    }
+                }
+                
+                chunkLines.Add(line);
+                currentSize += lineSize;
+                currentLine++;
+            }
+            
+            // Create chunk if we have content
+            if (chunkLines.Count > 0)
+            {
+                var chunkContent = contextHeader + "\n" + string.Join("\n", chunkLines);
+                
+                // Calculate actual line numbers in the original file
+                var methodStartLine = method.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+                var bodyStartLine = method.Body?.GetLocation().GetLineSpan().StartLinePosition.Line + 1 ?? methodStartLine;
+                var chunkStartLine = bodyStartLine + startLine;
+                var chunkEndLine = bodyStartLine + currentLine - 1;
+                
+                var chunk = new CodeChunk(
+                    $"{filePath}:{chunkStartLine}:method-body-{chunkIndex}",
+                    chunkContent.Trim(),
+                    filePath,
+                    chunkStartLine,
+                    chunkEndLine,
+                    "method-body"
+                );
+                
+                chunks.Add(chunk);
+                chunkIndex++;
+            }
+            
+            // Calculate overlap for next chunk
+            if (currentLine < bodyLines.Length)
+            {
+                var overlapLines = Math.Min((int)(chunkLines.Count * overlapPercentage), _slidingWindowConfig.MaxOverlapLines);
+                currentLine = Math.Max(startLine + chunkLines.Count - overlapLines, startLine + 1);
+            }
+        }
+        
+        return chunks;
+    }
+    
+    private string BuildMethodChunkHeader(string methodSignature, string containingClass, int chunkIndex, int totalBodyLines)
+    {
+        var header = new System.Text.StringBuilder();
+        header.AppendLine($"// Method body chunk {chunkIndex} from: {methodSignature}");
+        header.AppendLine($"// Class: {containingClass}");
+        header.AppendLine($"// Body lines: {totalBodyLines} total");
+        header.AppendLine();
+        return header.ToString();
+    }
+    
+    private static bool IsGoodMethodBreakingPoint(string line)
+    {
+        var trimmed = line.Trim();
+        
+        // Good breaking points within method bodies
+        return trimmed.Length == 0 ||                    // Empty line
+               trimmed.StartsWith("//") ||               // Comment
+               trimmed.StartsWith("/*") ||               // Block comment
+               trimmed == "}" ||                         // Closing brace
+               trimmed.StartsWith("if (") ||             // Control flow
+               trimmed.StartsWith("else") ||             
+               trimmed.StartsWith("for (") ||            
+               trimmed.StartsWith("while (") ||          
+               trimmed.StartsWith("foreach (") ||        
+               trimmed.StartsWith("switch (") ||         
+               trimmed.StartsWith("case ") ||            // Switch cases
+               trimmed.StartsWith("default:") ||         
+               trimmed.StartsWith("try") ||              // Exception handling
+               trimmed.StartsWith("catch") ||            
+               trimmed.StartsWith("finally") ||          
+               trimmed.StartsWith("using (") ||          // Resource management
+               trimmed.StartsWith("var ") ||             // Variable declarations
+               trimmed.StartsWith("string ") ||          
+               trimmed.StartsWith("int ") ||             
+               trimmed.StartsWith("bool ") ||            
+               trimmed.StartsWith("async ") ||           
+               trimmed.StartsWith("await ") ||           
+               trimmed.Contains(" = new ") ||            // Object instantiation
+               trimmed.StartsWith("return ") ||          // Return statements
+               trimmed.StartsWith("throw ") ||           // Exception throwing
+               trimmed.StartsWith("#region") ||          // Region markers
+               trimmed.StartsWith("#endregion") ||       
+               trimmed.Contains("TODO:") ||              // Development markers
+               trimmed.Contains("FIXME:") ||             
+               trimmed.Contains("NOTE:");                
     }
     
     private string GetPropertyWithContext(PropertyDeclarationSyntax prop)
