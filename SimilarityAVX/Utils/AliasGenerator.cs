@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace CSharpMcpServer.Utils
@@ -9,37 +10,36 @@ namespace CSharpMcpServer.Utils
     public static class AliasGenerator
     {
         /// <summary>
-        /// Generate a URL-friendly alias from a memory name
+        /// Generate a URL-friendly alias from a memory name using first 3 words max
         /// Examples:
         /// "API Design Decisions" -> "api-design-decisions"
-        /// "Authentication Flow" -> "authentication-flow"
-        /// "Bug Fix: Login Issue" -> "bug-fix-login-issue"
+        /// "Breakthrough: Tier 3 Ultra-Granular Chunking Success" -> "breakthrough-tier-3"
+        /// "Authentication Flow Implementation Details" -> "authentication-flow-implementation"
         /// </summary>
         public static string GenerateAlias(string memoryName)
         {
             if (string.IsNullOrWhiteSpace(memoryName))
                 return string.Empty;
 
-            return memoryName
+            // Clean up the name first
+            var cleaned = memoryName
                 .ToLowerInvariant()
-                .Replace(" ", "-")
-                .Replace("_", "-")
-                .Replace(":", "-")
-                .Replace("/", "-")
-                .Replace("\\", "-")
-                .Replace("(", "")
-                .Replace(")", "")
-                .Replace("[", "")
-                .Replace("]", "")
-                .Replace("{", "")
-                .Replace("}", "")
+                .Replace(":", " ")
+                .Replace("/", " ")
+                .Replace("\\", " ")
+                .Replace("(", " ")
+                .Replace(")", " ")
+                .Replace("[", " ")
+                .Replace("]", " ")
+                .Replace("{", " ")
+                .Replace("}", " ")
                 .Replace("\"", "")
                 .Replace("'", "")
-                .Replace(".", "-")
-                .Replace(",", "")
-                .Replace(";", "")
-                .Replace("!", "")
-                .Replace("?", "")
+                .Replace(".", " ")
+                .Replace(",", " ")
+                .Replace(";", " ")
+                .Replace("!", " ")
+                .Replace("?", " ")
                 .Replace("@", "at")
                 .Replace("#", "number")
                 .Replace("$", "")
@@ -49,17 +49,32 @@ namespace CSharpMcpServer.Utils
                 .Replace("*", "")
                 .Replace("+", "plus")
                 .Replace("=", "equals")
-                .Replace("|", "")
+                .Replace("|", " ")
                 .Replace("<", "")
                 .Replace(">", "")
                 .Replace("~", "")
-                .Replace("`", "")
-                // Remove any non-alphanumeric characters except hyphens
-                .Replace(@"[^a-z0-9\-]", "")
-                // Replace multiple consecutive hyphens with single hyphen
-                .Replace(@"-+", "-")
-                // Remove leading and trailing hyphens
-                .Trim('-');
+                .Replace("`", "");
+
+            // Split into words and take first 3
+            var words = cleaned.Split(new[] { ' ', '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+            var selectedWords = words.Take(3).ToArray();
+            
+            if (selectedWords.Length == 0)
+                return string.Empty;
+
+            // Join with hyphens and clean up
+            var result = string.Join("-", selectedWords);
+            
+            // Remove any non-alphanumeric characters except hyphens using proper regex
+            result = Regex.Replace(result, @"[^a-z0-9\-]", "");
+            
+            // Replace multiple consecutive hyphens with single hyphen
+            result = Regex.Replace(result, @"-+", "-");
+            
+            // Remove leading and trailing hyphens
+            result = result.Trim('-');
+
+            return result;
         }
 
         /// <summary>

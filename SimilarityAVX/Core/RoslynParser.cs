@@ -114,8 +114,8 @@ public class RoslynParser
             // Extract local functions (methods within methods)
             foreach (var localFunction in root.DescendantNodes().OfType<LocalFunctionStatementSyntax>())
             {
-                var localFunctionChunk = GetLocalFunctionWithContext(localFunction);
-                chunks.Add(CreateChunk(localFunctionChunk, localFunction, filePath, "local_function"));
+                var localFunctionChunks = GetLocalFunctionChunks(localFunction, filePath);
+                chunks.AddRange(localFunctionChunks);
             }
             
             // Extract switch expressions (pattern matching)
@@ -361,11 +361,19 @@ public class RoslynParser
         var primaryMethodChunk = GetMethodWithContext(method);
         chunks.Add(CreateChunk(primaryMethodChunk, method, filePath, "method"));
         
-        // For large methods, also create sliding window chunks of the method body
+        // Tier 2: For large methods, create sliding window chunks of the method body
         if (methodStr.Length > _slidingWindowConfig.TargetChunkSize)
         {
             var bodyChunks = CreateMethodBodyChunks(method, filePath);
             chunks.AddRange(bodyChunks);
+        }
+        
+        // Tier 3: For very large methods, create ultra-granular chunks
+        var ultraThreshold = _slidingWindowConfig.UltraGranularChunkSize * 2;
+        if (methodStr.Length > ultraThreshold)
+        {
+            var ultraChunks = CreateUltraGranularMethodChunks(method, filePath);
+            chunks.AddRange(ultraChunks);
         }
         
         return chunks;
@@ -598,6 +606,321 @@ public class RoslynParser
                trimmed.Contains("NOTE:");                
     }
     
+    private List<CodeChunk> CreateUltraGranularMethodChunks(MethodDeclarationSyntax method, string filePath)
+    {
+        var chunks = new List<CodeChunk>();
+        var methodBody = method.Body?.ToString();
+        
+        if (string.IsNullOrEmpty(methodBody))
+        {
+            return chunks; // No body to chunk (e.g., abstract methods, interface methods)
+        }
+        
+        // Get method context for each chunk
+        var containingType = method.Ancestors()
+            .FirstOrDefault(a => a is TypeDeclarationSyntax) as TypeDeclarationSyntax;
+        var methodSignature = $"{method.Modifiers} {method.ReturnType} {method.Identifier}{method.ParameterList}";
+        var containingClass = containingType?.Identifier.ToString() ?? "UnknownClass";
+        
+        // Split method body into lines
+        var bodyLines = methodBody.Split('\n');
+        var targetChunkSize = _slidingWindowConfig.UltraGranularChunkSize; // 2000 chars default
+        var overlapPercentage = _slidingWindowConfig.OverlapPercentage; // Share overlap with tier 2
+        
+        var currentLine = 0;
+        var chunkIndex = 1;
+        
+        while (currentLine < bodyLines.Length)
+        {
+            var chunkLines = new List<string>();
+            var currentSize = 0;
+            var startLine = currentLine;
+            
+            // Reserve space for ultra-granular context header (minimal)
+            var contextHeader = BuildUltraGranularHeader(methodSignature, containingClass, chunkIndex);
+            var headerSize = contextHeader.Length;
+            var availableSpace = targetChunkSize - headerSize;
+            
+            // Build chunk content respecting size limits
+            while (currentLine < bodyLines.Length && currentSize < availableSpace)
+            {
+                var line = bodyLines[currentLine];
+                var lineSize = line.Length + 1; // +1 for newline
+                
+                // Check for good breaking points when approaching limit
+                if (currentSize + lineSize > availableSpace && chunkLines.Count > 0)
+                {
+                    // More lenient breaking for ultra-granular chunks
+                    if (IsUltraGranularBreakingPoint(line) || currentSize > availableSpace * 0.75)
+                    {
+                        break;
+                    }
+                }
+                
+                chunkLines.Add(line);
+                currentSize += lineSize;
+                currentLine++;
+            }
+            
+            // Create chunk if we have content
+            if (chunkLines.Count > 0)
+            {
+                var chunkContent = contextHeader + "\n" + string.Join("\n", chunkLines);
+                
+                // Calculate actual line numbers in the original file
+                var methodStartLine = method.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+                var bodyStartLine = method.Body?.GetLocation().GetLineSpan().StartLinePosition.Line + 1 ?? methodStartLine;
+                var chunkStartLine = bodyStartLine + startLine;
+                var chunkEndLine = bodyStartLine + currentLine - 1;
+                
+                var chunk = new CodeChunk(
+                    $"{filePath}:{chunkStartLine}:method-ultra-{chunkIndex}",
+                    chunkContent.Trim(),
+                    filePath,
+                    chunkStartLine,
+                    chunkEndLine,
+                    "method-ultra"
+                );
+                
+                chunks.Add(chunk);
+                chunkIndex++;
+            }
+            
+            // Calculate overlap for next chunk (same logic as tier 2)
+            if (currentLine < bodyLines.Length)
+            {
+                var overlapLines = Math.Min((int)(chunkLines.Count * overlapPercentage), _slidingWindowConfig.MaxOverlapLines);
+                currentLine = Math.Max(startLine + chunkLines.Count - overlapLines, startLine + 1);
+            }
+        }
+        
+        return chunks;
+    }
+    
+    private string BuildUltraGranularHeader(string methodSignature, string containingClass, int chunkIndex)
+    {
+        // Minimal header to preserve space for content
+        return $"// Ultra chunk {chunkIndex}: {methodSignature}\n// Class: {containingClass}\n";
+    }
+    
+    private static bool IsUltraGranularBreakingPoint(string line)
+    {
+        var trimmed = line.Trim();
+        
+        // More permissive breaking points for ultra-granular chunks
+        return trimmed.Length == 0 ||                    // Empty line
+               trimmed.StartsWith("//") ||               // Comments
+               trimmed.StartsWith("/*") ||               
+               trimmed == "}" ||                         // Block closings
+               trimmed.EndsWith(";") ||                  // Statement endings
+               trimmed.EndsWith("{") ||                  // Block openings
+               trimmed.StartsWith("if (") ||             // Control flow
+               trimmed.StartsWith("else") ||             
+               trimmed.StartsWith("case ") ||            // Switch cases
+               trimmed.StartsWith("var ") ||             // Variable declarations
+               trimmed.StartsWith("string ") ||          
+               trimmed.StartsWith("int ") ||             
+               trimmed.StartsWith("return ") ||          // Return statements
+               trimmed.Contains(".") ||                  // Method calls (more permissive)
+               trimmed.Contains(" = ");                  // Assignments
+    }
+    
+    private List<CodeChunk> CreateLocalFunctionBodyChunks(LocalFunctionStatementSyntax localFunction, string filePath)
+    {
+        var chunks = new List<CodeChunk>();
+        var functionBody = localFunction.Body?.ToString();
+        
+        if (string.IsNullOrEmpty(functionBody))
+        {
+            return chunks; // No body to chunk (e.g., expression-bodied local functions)
+        }
+        
+        // Get local function context for each chunk
+        var containingMethod = localFunction.Ancestors()
+            .FirstOrDefault(a => a is MethodDeclarationSyntax) as MethodDeclarationSyntax;
+        var functionSignature = $"{localFunction.Modifiers} {localFunction.ReturnType} {localFunction.Identifier}{localFunction.ParameterList}";
+        var containingMethodName = containingMethod?.Identifier.ToString() ?? "UnknownMethod";
+        
+        // Split function body into lines
+        var bodyLines = functionBody.Split('\n');
+        var targetChunkSize = _slidingWindowConfig.TargetChunkSize;
+        var overlapPercentage = _slidingWindowConfig.OverlapPercentage;
+        
+        var currentLine = 0;
+        var chunkIndex = 1;
+        
+        while (currentLine < bodyLines.Length)
+        {
+            var chunkLines = new List<string>();
+            var currentSize = 0;
+            var startLine = currentLine;
+            
+            // Reserve space for local function context header
+            var contextHeader = BuildLocalFunctionChunkHeader(functionSignature, containingMethodName, chunkIndex, bodyLines.Length);
+            var headerSize = contextHeader.Length;
+            var availableSpace = targetChunkSize - headerSize;
+            
+            // Build chunk content respecting size limits
+            while (currentLine < bodyLines.Length && currentSize < availableSpace)
+            {
+                var line = bodyLines[currentLine];
+                var lineSize = line.Length + 1; // +1 for newline
+                
+                // Check for good breaking points when approaching limit
+                if (currentSize + lineSize > availableSpace && chunkLines.Count > 0)
+                {
+                    if (IsGoodMethodBreakingPoint(line) || currentSize > availableSpace * 0.8)
+                    {
+                        break;
+                    }
+                }
+                
+                chunkLines.Add(line);
+                currentSize += lineSize;
+                currentLine++;
+            }
+            
+            // Create chunk if we have content
+            if (chunkLines.Count > 0)
+            {
+                var chunkContent = contextHeader + "\n" + string.Join("\n", chunkLines);
+                
+                // Calculate actual line numbers in the original file
+                var functionStartLine = localFunction.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+                var bodyStartLine = localFunction.Body?.GetLocation().GetLineSpan().StartLinePosition.Line + 1 ?? functionStartLine;
+                var chunkStartLine = bodyStartLine + startLine;
+                var chunkEndLine = bodyStartLine + currentLine - 1;
+                
+                var chunk = new CodeChunk(
+                    $"{filePath}:{chunkStartLine}:local-function-body-{chunkIndex}",
+                    chunkContent.Trim(),
+                    filePath,
+                    chunkStartLine,
+                    chunkEndLine,
+                    "local-function-body"
+                );
+                
+                chunks.Add(chunk);
+                chunkIndex++;
+            }
+            
+            // Calculate overlap for next chunk
+            if (currentLine < bodyLines.Length)
+            {
+                var overlapLines = Math.Min((int)(chunkLines.Count * overlapPercentage), _slidingWindowConfig.MaxOverlapLines);
+                currentLine = Math.Max(startLine + chunkLines.Count - overlapLines, startLine + 1);
+            }
+        }
+        
+        return chunks;
+    }
+    
+    private List<CodeChunk> CreateUltraGranularLocalFunctionChunks(LocalFunctionStatementSyntax localFunction, string filePath)
+    {
+        var chunks = new List<CodeChunk>();
+        var functionBody = localFunction.Body?.ToString();
+        
+        if (string.IsNullOrEmpty(functionBody))
+        {
+            return chunks; // No body to chunk
+        }
+        
+        // Get local function context for each chunk
+        var containingMethod = localFunction.Ancestors()
+            .FirstOrDefault(a => a is MethodDeclarationSyntax) as MethodDeclarationSyntax;
+        var functionSignature = $"{localFunction.Modifiers} {localFunction.ReturnType} {localFunction.Identifier}{localFunction.ParameterList}";
+        var containingMethodName = containingMethod?.Identifier.ToString() ?? "UnknownMethod";
+        
+        // Split function body into lines
+        var bodyLines = functionBody.Split('\n');
+        var targetChunkSize = _slidingWindowConfig.UltraGranularChunkSize; // 2000 chars default
+        var overlapPercentage = _slidingWindowConfig.OverlapPercentage; // Share overlap with tier 2
+        
+        var currentLine = 0;
+        var chunkIndex = 1;
+        
+        while (currentLine < bodyLines.Length)
+        {
+            var chunkLines = new List<string>();
+            var currentSize = 0;
+            var startLine = currentLine;
+            
+            // Reserve space for ultra-granular context header (minimal)
+            var contextHeader = BuildUltraGranularLocalFunctionHeader(functionSignature, containingMethodName, chunkIndex);
+            var headerSize = contextHeader.Length;
+            var availableSpace = targetChunkSize - headerSize;
+            
+            // Build chunk content respecting size limits
+            while (currentLine < bodyLines.Length && currentSize < availableSpace)
+            {
+                var line = bodyLines[currentLine];
+                var lineSize = line.Length + 1; // +1 for newline
+                
+                // Check for good breaking points when approaching limit
+                if (currentSize + lineSize > availableSpace && chunkLines.Count > 0)
+                {
+                    // More lenient breaking for ultra-granular chunks
+                    if (IsUltraGranularBreakingPoint(line) || currentSize > availableSpace * 0.75)
+                    {
+                        break;
+                    }
+                }
+                
+                chunkLines.Add(line);
+                currentSize += lineSize;
+                currentLine++;
+            }
+            
+            // Create chunk if we have content
+            if (chunkLines.Count > 0)
+            {
+                var chunkContent = contextHeader + "\n" + string.Join("\n", chunkLines);
+                
+                // Calculate actual line numbers in the original file
+                var functionStartLine = localFunction.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+                var bodyStartLine = localFunction.Body?.GetLocation().GetLineSpan().StartLinePosition.Line + 1 ?? functionStartLine;
+                var chunkStartLine = bodyStartLine + startLine;
+                var chunkEndLine = bodyStartLine + currentLine - 1;
+                
+                var chunk = new CodeChunk(
+                    $"{filePath}:{chunkStartLine}:local-function-ultra-{chunkIndex}",
+                    chunkContent.Trim(),
+                    filePath,
+                    chunkStartLine,
+                    chunkEndLine,
+                    "local-function-ultra"
+                );
+                
+                chunks.Add(chunk);
+                chunkIndex++;
+            }
+            
+            // Calculate overlap for next chunk (same logic as tier 2)
+            if (currentLine < bodyLines.Length)
+            {
+                var overlapLines = Math.Min((int)(chunkLines.Count * overlapPercentage), _slidingWindowConfig.MaxOverlapLines);
+                currentLine = Math.Max(startLine + chunkLines.Count - overlapLines, startLine + 1);
+            }
+        }
+        
+        return chunks;
+    }
+    
+    private string BuildLocalFunctionChunkHeader(string functionSignature, string containingMethodName, int chunkIndex, int totalBodyLines)
+    {
+        var header = new System.Text.StringBuilder();
+        header.AppendLine($"// Local function body chunk {chunkIndex} from: {functionSignature}");
+        header.AppendLine($"// Containing method: {containingMethodName}");
+        header.AppendLine();
+        return header.ToString();
+    }
+    
+    private string BuildUltraGranularLocalFunctionHeader(string functionSignature, string containingMethodName, int chunkIndex)
+    {
+        // Minimal header to preserve space for content
+        return $"// Ultra chunk {chunkIndex}: {functionSignature}\n// In method: {containingMethodName}\n";
+    }
+    
     private string GetPropertyWithContext(PropertyDeclarationSyntax prop)
     {
         var containingType = prop.Ancestors()
@@ -616,6 +939,33 @@ public class RoslynParser
         return string.Join("\n", parts);
     }
     
+    private List<CodeChunk> GetLocalFunctionChunks(LocalFunctionStatementSyntax localFunction, string filePath)
+    {
+        var chunks = new List<CodeChunk>();
+        var localFunctionStr = localFunction.ToFullString().Trim();
+        
+        // Always create the primary local function chunk (with smart truncation if needed)
+        var primaryLocalFunctionChunk = GetLocalFunctionWithContext(localFunction);
+        chunks.Add(CreateChunk(primaryLocalFunctionChunk, localFunction, filePath, "local_function"));
+        
+        // Tier 2: For large local functions, create sliding window chunks of the body
+        if (localFunctionStr.Length > _slidingWindowConfig.TargetChunkSize)
+        {
+            var bodyChunks = CreateLocalFunctionBodyChunks(localFunction, filePath);
+            chunks.AddRange(bodyChunks);
+        }
+        
+        // Tier 3: For very large local functions, create ultra-granular chunks
+        var ultraThreshold = _slidingWindowConfig.UltraGranularChunkSize * 2;
+        if (localFunctionStr.Length > ultraThreshold)
+        {
+            var ultraChunks = CreateUltraGranularLocalFunctionChunks(localFunction, filePath);
+            chunks.AddRange(ultraChunks);
+        }
+        
+        return chunks;
+    }
+
     private string GetLocalFunctionWithContext(LocalFunctionStatementSyntax localFunction)
     {
         var containingMethod = localFunction.Ancestors()
@@ -632,8 +982,50 @@ public class RoslynParser
             parts.Add("// Local function");
         }
         
-        // Add the local function
-        parts.Add(localFunction.ToFullString().Trim());
+        // Add the local function (with smart truncation if needed)
+        var localFunctionStr = localFunction.ToFullString().Trim();
+        if (localFunctionStr.Length > MaxChunkSize)
+        {
+            // Smart truncation for huge local functions
+            var lines = localFunctionStr.Split('\n');
+            var truncatedLines = new List<string>();
+            var currentSize = 0;
+            var reserveSize = 500; // Reserve space for truncation message
+            
+            // Always include signature (first few lines)
+            var signatureLines = Math.Min(5, lines.Length);
+            for (int i = 0; i < signatureLines; i++)
+            {
+                truncatedLines.Add(lines[i]);
+                currentSize += lines[i].Length + 1;
+            }
+            
+            // Add as much body as possible
+            if (currentSize < MaxChunkSize - reserveSize)
+            {
+                var availableSpace = MaxChunkSize - reserveSize - currentSize;
+                for (int i = signatureLines; i < lines.Length && currentSize < availableSpace; i++)
+                {
+                    var lineSize = lines[i].Length + 1;
+                    if (currentSize + lineSize > availableSpace) break;
+                    
+                    truncatedLines.Add(lines[i]);
+                    currentSize += lineSize;
+                }
+                
+                truncatedLines.Add($"    // ... truncated ({localFunctionStr.Length - currentSize} chars)");
+                if (!truncatedLines.LastOrDefault()?.Trim().Equals("}") == true)
+                {
+                    truncatedLines.Add("}");
+                }
+            }
+            
+            parts.Add(string.Join("\n", truncatedLines));
+        }
+        else
+        {
+            parts.Add(localFunctionStr);
+        }
         
         return string.Join("\n", parts);
     }

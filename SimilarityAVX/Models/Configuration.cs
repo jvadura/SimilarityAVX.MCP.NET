@@ -208,6 +208,13 @@ public class SlidingWindowConfig
     /// </summary>
     [JsonPropertyName("maxOverlapLines")]
     public int MaxOverlapLines { get; set; } = 10;
+    
+    /// <summary>
+    /// Ultra-granular chunk size for tier 3 chunking (very fine-grained search)
+    /// Only activates for methods >= 2x this size. Uses same overlap as targetChunkSize.
+    /// </summary>
+    [JsonPropertyName("ultraGranularChunkSize")]
+    public int UltraGranularChunkSize { get; set; } = 2000;
 }
 
 public class PerformanceConfig
