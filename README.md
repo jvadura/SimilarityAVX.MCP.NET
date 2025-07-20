@@ -276,6 +276,26 @@ mcp__cstools__memory_get_tree --project myproject --includeContent true
 mcp__cstools__memory_import_markdown --project myproject --filePath "/path/to/docs.md" --tags "documentation,imported"
 ```
 
+## Database Storage
+
+The server stores SQLite databases in platform-specific locations:
+
+### Code Search Databases
+- **Windows**: `%LOCALAPPDATA%\csharp-mcp-server\`
+- **Linux/WSL**: `~/.local/share/csharp-mcp-server/`
+- **Project-specific files**: `codesearch-{project}.db`
+
+### Memory Databases  
+- **Windows**: `%LOCALAPPDATA%\csharp-mcp-server\memories\`
+- **Linux/WSL**: `~/.local/share/csharp-mcp-server/memories/`
+- **Per-project files**: `memory-{project}.db`
+
+### Embedding Cache
+- **Shared cache**: `embedding_cache.db` (in main directory)
+- **Purpose**: Speeds up repeated queries by caching embeddings
+
+All databases are created automatically when first accessed. Each project maintains complete isolation with its own database files.
+
 ## Limitations
 
 - Requires indexing before searching

@@ -47,7 +47,7 @@
   <!-- Copy config.json to output directory -->
   <ItemGroup>
     <None Update="config.json">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="config_snowflake.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
