@@ -610,14 +610,7 @@ public class RoslynParser
             parts.Add($"// In class {containingType.Identifier}");
         }
         
-        // Add XML documentation
-        var xmlDocs = GetXmlDocumentation(prop);
-        if (!string.IsNullOrWhiteSpace(xmlDocs))
-        {
-            parts.Add(xmlDocs.Trim());
-        }
-        
-        // Add the property
+        // Add the property (includes XML documentation as leading trivia)
         parts.Add(prop.ToFullString().Trim());
         
         return string.Join("\n", parts);
@@ -1311,14 +1304,7 @@ public class RoslynParser
         
         parts.Add($"// Method in Razor component {Path.GetFileName(filePath)}");
         
-        // Add any XML documentation
-        var xmlDocs = GetXmlDocumentation(method);
-        if (!string.IsNullOrWhiteSpace(xmlDocs))
-        {
-            parts.Add(xmlDocs.Trim());
-        }
-        
-        // Add the method
+        // Add the method (includes XML documentation as leading trivia)
         parts.Add(method.ToFullString().Trim());
         
         return string.Join("\n", parts);
@@ -1328,14 +1314,7 @@ public class RoslynParser
     {
         var parts = new List<string>();
         
-        // Add any XML documentation
-        var xmlDocs = GetXmlDocumentation(prop);
-        if (!string.IsNullOrWhiteSpace(xmlDocs))
-        {
-            parts.Add(xmlDocs.Trim());
-        }
-        
-        // Add the property (includes attributes)
+        // Add the property (includes XML documentation as leading trivia)
         parts.Add(prop.ToFullString().Trim());
         
         return string.Join("\n", parts);
