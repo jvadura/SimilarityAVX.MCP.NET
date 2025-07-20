@@ -847,8 +847,7 @@ namespace CSharpMcpServer.Core
         /// </summary>
         private string CreateFunctionBodyContextHeader(string functionName, int bodyLines, int startLine)
         {
-            return $"// Function body chunk from: {functionName}\n" +
-                   $"// Body lines: {bodyLines} total\n";
+            return $"// Function body chunk from: {functionName}\n";
         }
 
         /// <summary>

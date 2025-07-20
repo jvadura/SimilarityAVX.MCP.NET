@@ -223,13 +223,19 @@ public class RoslynParser
         var members = new List<string>();
         
         // Add field signatures
-        foreach (var field in cls.Members.OfType<FieldDeclarationSyntax>().Take(10))
+        var allFields = cls.Members.OfType<FieldDeclarationSyntax>().ToList();
+        foreach (var field in allFields.Take(10))
         {
             members.Add($"    {field.Modifiers} {field.Declaration.Type} {field.Declaration.Variables};");
         }
+        if (allFields.Count > 10)
+        {
+            members.Add($"    // ... and {allFields.Count - 10} more fields");
+        }
         
         // Add property signatures
-        foreach (var prop in cls.Members.OfType<PropertyDeclarationSyntax>().Take(10))
+        var allProperties = cls.Members.OfType<PropertyDeclarationSyntax>().ToList();
+        foreach (var prop in allProperties.Take(10))
         {
             var propSig = $"    {prop.Modifiers} {prop.Type} {prop.Identifier} {{ ";
             if (prop.AccessorList != null)
@@ -239,12 +245,21 @@ public class RoslynParser
             propSig += " }";
             members.Add(propSig);
         }
+        if (allProperties.Count > 10)
+        {
+            members.Add($"    // ... and {allProperties.Count - 10} more properties");
+        }
         
         // Add method signatures
-        foreach (var method in cls.Members.OfType<MethodDeclarationSyntax>().Take(10))
+        var allMethods = cls.Members.OfType<MethodDeclarationSyntax>().ToList();
+        foreach (var method in allMethods.Take(10))
         {
             var methodSig = $"    {method.Modifiers} {method.ReturnType} {method.Identifier}{method.ParameterList};";
             members.Add(methodSig);
+        }
+        if (allMethods.Count > 10)
+        {
+            members.Add($"    // ... and {allMethods.Count - 10} more methods");
         }
         
         if (members.Any())
