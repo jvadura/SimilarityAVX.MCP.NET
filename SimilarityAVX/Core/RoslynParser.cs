@@ -11,10 +11,10 @@ namespace CSharpMcpServer.Core;
 
 public class RoslynParser
 {
-    private readonly int MaxChunkSize;
+    private readonly int MaxChunkSize; // 100KB, do NOT use for chunking, only truncating for embedding model!
     private readonly bool _includeFilePath;
     private readonly bool _includeProjectContext;
-    private readonly SlidingWindowConfig _slidingWindowConfig;
+    private readonly SlidingWindowConfig _slidingWindowConfig; // Use for smart chunking
     
     public RoslynParser(bool includeFilePath = false, bool includeProjectContext = false, int maxChunkSize = 100000, SlidingWindowConfig? slidingWindowConfig = null)
     {
@@ -1185,100 +1185,21 @@ public class RoslynParser
             
             // Create chunks for different sections
             
-            // 1. @using directives chunk
-            if (usings.Any())
-            {
-                var usingContent = string.Join("\n", usings.Select(u => u.content));
-                var startLine = usings.First().startLine;
-                var endLine = usings.Last().endLine;
-                chunks.Add(new CodeChunk(
-                    $"{filePath}:{startLine}",
-                    usingContent,
-                    filePath,
-                    startLine,
-                    endLine,
-                    "razor-using"
-                ));
-            }
+            // NOTE: @using directive chunking removed to eliminate semantic noise
+            // Using directives provide minimal semantic value for business logic search
             
-            // 2. Parse @code sections as C# code
+            // 2. Parse @code sections using smart chunking (similar to C# methods)
             int codeIndex = 1;
             foreach (var (codeSection, sectionStartLine, sectionEndLine) in codeSections)
             {
-                // Parse the C# code inside @code blocks
-                try
-                {
-                    var codeTree = CSharpSyntaxTree.ParseText(codeSection);
-                    var codeRoot = codeTree.GetRoot();
-                    
-                    // Extract methods from code sections
-                    foreach (var method in codeRoot.DescendantNodes().OfType<MethodDeclarationSyntax>())
-                    {
-                        var methodContent = GetRazorMethodWithContext(method, filePath);
-                        chunks.Add(CreateRazorChunk(methodContent, method, filePath, "razor-method", codeIndex, sectionStartLine));
-                        codeIndex++;
-                    }
-                    
-                    // Extract properties from code sections
-                    foreach (var prop in codeRoot.DescendantNodes().OfType<PropertyDeclarationSyntax>())
-                    {
-                        var propContent = GetRazorPropertyWithContext(prop, filePath);
-                        chunks.Add(CreateRazorChunk(propContent, prop, filePath, "razor-property", codeIndex, sectionStartLine));
-                        codeIndex++;
-                    }
-                    
-                    // Extract fields from code sections
-                    foreach (var field in codeRoot.DescendantNodes().OfType<FieldDeclarationSyntax>())
-                    {
-                        var fieldContent = field.ToString().Trim();
-                        chunks.Add(CreateRazorChunk(fieldContent, field, filePath, "razor-field", codeIndex, sectionStartLine));
-                        codeIndex++;
-                    }
-                    
-                    // If no specific members found, add the whole @code block
-                    if (!codeRoot.DescendantNodes().OfType<MethodDeclarationSyntax>().Any() &&
-                        !codeRoot.DescendantNodes().OfType<PropertyDeclarationSyntax>().Any() &&
-                        !codeRoot.DescendantNodes().OfType<FieldDeclarationSyntax>().Any())
-                    {
-                        var fullCodeContent = $"// Razor @code block in {Path.GetFileName(filePath)}\n{codeSection}";
-                        chunks.Add(new CodeChunk(
-                            $"{filePath}:{sectionStartLine}:code{codeIndex}",
-                            fullCodeContent.Length > MaxChunkSize ? fullCodeContent.Substring(0, MaxChunkSize) + "\n// ... truncated" : fullCodeContent,
-                            filePath,
-                            sectionStartLine,
-                            sectionEndLine,
-                            "razor-code"
-                        ));
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[RoslynParser] Error parsing @code section in {filePath}: {ex.Message}");
-                    // Fallback: add as text chunk
-                    var fallbackContent = $"// Razor @code block in {Path.GetFileName(filePath)}\n{codeSection}";
-                    chunks.Add(new CodeChunk(
-                        $"{filePath}:{sectionStartLine}:code{codeIndex}",
-                        fallbackContent.Length > MaxChunkSize ? fallbackContent.Substring(0, MaxChunkSize) + "\n// ... truncated" : fallbackContent,
-                        filePath,
-                        sectionStartLine,
-                        sectionEndLine,
-                        "razor-code"
-                    ));
-                }
+                chunks.AddRange(CreateRazorCodeChunks(codeSection, filePath, sectionStartLine, sectionEndLine, codeIndex));
+                codeIndex++;
             }
             
-            // 3. Create chunks for significant HTML/Razor sections
+            // 3. Create smart chunks for HTML/Razor sections
             foreach (var (htmlSection, startLine, endLine) in htmlSections.Where(h => h.content.Length > 100)) // Only significant sections
             {
-                var htmlContent = $"<!-- Razor markup in {Path.GetFileName(filePath)} -->\n{htmlSection}";
-                chunks.Add(new CodeChunk(
-                    $"{filePath}:{startLine}",
-                    htmlContent.Length > MaxChunkSize ? htmlContent.Substring(0, MaxChunkSize) + "\n<!-- ... truncated -->" : htmlContent,
-                    filePath,
-                    startLine,
-                    endLine,
-                    "razor-html"
-                ));
+                chunks.AddRange(CreateRazorHtmlChunks(htmlSection, filePath, startLine, endLine));
             }
             
             // If no chunks were created, add the whole file as fallback
@@ -1550,5 +1471,465 @@ public class RoslynParser
         }
         
         return chunkType;
+    }
+    
+    /// <summary>
+    /// Creates smart chunks for Razor @code sections using hybrid approach
+    /// </summary>
+    private List<CodeChunk> CreateRazorCodeChunks(string codeSection, string filePath, int sectionStartLine, int sectionEndLine, int codeIndex)
+    {
+        var chunks = new List<CodeChunk>();
+        
+        try
+        {
+            var codeTree = CSharpSyntaxTree.ParseText(codeSection);
+            var codeRoot = codeTree.GetRoot();
+            
+            // Strategy 1: Create primary @code chunk (complete context)
+            var primaryCodeContent = $"// Razor @code block in {Path.GetFileName(filePath)}\n{codeSection}";
+            
+            // Smart truncation if too large, preserving beginning
+            if (primaryCodeContent.Length > MaxChunkSize)
+            {
+                var truncationPoint = MaxChunkSize - 200; // Reserve space for truncation message
+                var truncatedContent = primaryCodeContent.Substring(0, truncationPoint);
+                
+                // Try to break at a sensible point
+                var lastLineBreak = truncatedContent.LastIndexOf('\n');
+                if (lastLineBreak > truncationPoint * 0.8) // If we can get at least 80% by breaking at line
+                {
+                    truncatedContent = truncatedContent.Substring(0, lastLineBreak);
+                }
+                
+                primaryCodeContent = truncatedContent + "\n\n// ... @CODE BLOCK TRUNCATED ..." + 
+                                   $"\n// Original size: {codeSection.Length} chars, showing first {truncatedContent.Length} chars" +
+                                   "\n}"; // Close the @code block
+            }
+            
+            chunks.Add(new CodeChunk(
+                $"{filePath}:{sectionStartLine}:razor-code-{codeIndex}",
+                primaryCodeContent,
+                filePath,
+                sectionStartLine,
+                sectionEndLine,
+                "razor-code"
+            ));
+            
+            // Strategy 2: Extract only substantial methods (>1KB) to avoid noise
+            var memberIndex = 1;
+            
+            // Only extract methods if they're large enough to warrant individual chunking
+            foreach (var method in codeRoot.DescendantNodes().OfType<MethodDeclarationSyntax>())
+            {
+                var methodContent = GetRazorMethodWithContext(method, filePath);
+                
+                // Only create individual method chunks for substantial methods (configurable threshold)
+                if (methodContent.Length > _slidingWindowConfig.TargetChunkSize)
+                {
+                    chunks.Add(CreateRazorChunk(methodContent, method, filePath, "razor-method", memberIndex, sectionStartLine));
+                    
+                    // Strategy 3: For large methods, create sliding window body chunks
+                    if (methodContent.Length > _slidingWindowConfig.TargetChunkSize)
+                    {
+                        var bodyChunks = CreateRazorMethodBodyChunks(method, filePath, sectionStartLine);
+                        chunks.AddRange(bodyChunks);
+                    }
+                }
+                
+                memberIndex++;
+            }
+            
+            // NOTE: Property and field extraction removed to eliminate semantic noise
+            // Properties and fields will be captured in primary @code chunks and sliding window chunks
+            
+            // Strategy 4: For large @code blocks, always use sliding window for comprehensive coverage
+            if (codeSection.Length > _slidingWindowConfig.TargetChunkSize)
+            {
+                var slidingChunks = CreateRazorCodeSlidingWindowChunks(codeSection, filePath, sectionStartLine, sectionEndLine);
+                chunks.AddRange(slidingChunks);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[RoslynParser] Error parsing @code section in {filePath}: {ex.Message}");
+            
+            // Fallback: smart sliding window chunking even if parsing fails
+            if (codeSection.Length > _slidingWindowConfig.TargetChunkSize)
+            {
+                var slidingChunks = CreateRazorCodeSlidingWindowChunks(codeSection, filePath, sectionStartLine, sectionEndLine);
+                chunks.AddRange(slidingChunks);
+            }
+            else
+            {
+                // Small fallback chunk
+                var fallbackContent = $"// Razor @code block in {Path.GetFileName(filePath)}\n{codeSection}";
+                chunks.Add(new CodeChunk(
+                    $"{filePath}:{sectionStartLine}:code{codeIndex}",
+                    fallbackContent,
+                    filePath,
+                    sectionStartLine,
+                    sectionEndLine,
+                    "razor-code"
+                ));
+            }
+        }
+        
+        return chunks;
+    }
+    
+    /// <summary>
+    /// Creates sliding window chunks for large Razor method bodies
+    /// </summary>
+    private List<CodeChunk> CreateRazorMethodBodyChunks(MethodDeclarationSyntax method, string filePath, int razorCodeStartLine)
+    {
+        var chunks = new List<CodeChunk>();
+        var methodBody = method.Body?.ToString();
+        
+        if (string.IsNullOrEmpty(methodBody))
+        {
+            return chunks;
+        }
+        
+        var methodSignature = $"{method.Modifiers} {method.ReturnType} {method.Identifier}{method.ParameterList}";
+        var razorComponentName = Path.GetFileNameWithoutExtension(filePath);
+        
+        var bodyLines = methodBody.Split('\n');
+        var targetChunkSize = _slidingWindowConfig.TargetChunkSize;
+        var overlapPercentage = _slidingWindowConfig.OverlapPercentage;
+        
+        var currentLine = 0;
+        var chunkIndex = 1;
+        
+        while (currentLine < bodyLines.Length)
+        {
+            var chunkLines = new List<string>();
+            var currentSize = 0;
+            var startLine = currentLine;
+            
+            // Build context header for Razor method body chunk
+            var contextHeader = BuildRazorMethodChunkHeader(methodSignature, razorComponentName, chunkIndex, bodyLines.Length);
+            var headerSize = contextHeader.Length;
+            var availableSpace = targetChunkSize - headerSize;
+            
+            // Build chunk content respecting size limits
+            while (currentLine < bodyLines.Length && currentSize < availableSpace)
+            {
+                var line = bodyLines[currentLine];
+                var lineSize = line.Length + 1; // +1 for newline
+                
+                // Check for good breaking points when approaching limit
+                if (currentSize + lineSize > availableSpace && chunkLines.Count > 0)
+                {
+                    if (IsGoodRazorBreakingPoint(line) || currentSize > availableSpace * 0.8)
+                    {
+                        break;
+                    }
+                }
+                
+                chunkLines.Add(line);
+                currentSize += lineSize;
+                currentLine++;
+            }
+            
+            // Create chunk if we have content
+            if (chunkLines.Count > 0)
+            {
+                var chunkContent = contextHeader + "\n" + string.Join("\n", chunkLines);
+                
+                // Calculate line numbers (approximate, since we're in a @code block)
+                var chunkStartLine = razorCodeStartLine + startLine;
+                var chunkEndLine = razorCodeStartLine + currentLine - 1;
+                
+                var chunk = new CodeChunk(
+                    $"{filePath}:{chunkStartLine}:razor-method-body-{chunkIndex}",
+                    chunkContent.Trim(),
+                    filePath,
+                    chunkStartLine,
+                    chunkEndLine,
+                    "razor-method-body"
+                );
+                
+                chunks.Add(chunk);
+                chunkIndex++;
+            }
+            
+            // Calculate overlap for next chunk
+            if (currentLine < bodyLines.Length)
+            {
+                var overlapLines = Math.Min((int)(chunkLines.Count * overlapPercentage), _slidingWindowConfig.MaxOverlapLines);
+                currentLine = Math.Max(startLine + chunkLines.Count - overlapLines, startLine + 1);
+            }
+        }
+        
+        return chunks;
+    }
+    
+    /// <summary>
+    /// Creates sliding window chunks for large @code sections with no clear structure
+    /// </summary>
+    private List<CodeChunk> CreateRazorCodeSlidingWindowChunks(string codeSection, string filePath, int sectionStartLine, int sectionEndLine)
+    {
+        var chunks = new List<CodeChunk>();
+        var lines = codeSection.Split('\n');
+        var targetChunkSize = _slidingWindowConfig.TargetChunkSize;
+        var overlapPercentage = _slidingWindowConfig.OverlapPercentage;
+        
+        var currentLine = 0;
+        var chunkIndex = 1;
+        
+        while (currentLine < lines.Length)
+        {
+            var chunkLines = new List<string>();
+            var currentSize = 0;
+            var startLine = currentLine;
+            
+            // Build context header
+            var contextHeader = $"// Razor @code chunk {chunkIndex} from: {Path.GetFileName(filePath)}\n";
+            var headerSize = contextHeader.Length;
+            var availableSpace = targetChunkSize - headerSize;
+            
+            // Build chunk content
+            while (currentLine < lines.Length && currentSize < availableSpace)
+            {
+                var line = lines[currentLine];
+                var lineSize = line.Length + 1;
+                
+                if (currentSize + lineSize > availableSpace && chunkLines.Count > 0)
+                {
+                    if (IsGoodRazorBreakingPoint(line) || currentSize > availableSpace * 0.8)
+                    {
+                        break;
+                    }
+                }
+                
+                chunkLines.Add(line);
+                currentSize += lineSize;
+                currentLine++;
+            }
+            
+            // Create chunk if we have content
+            if (chunkLines.Count > 0)
+            {
+                var chunkContent = contextHeader + string.Join("\n", chunkLines);
+                var chunkStartLine = sectionStartLine + startLine;
+                var chunkEndLine = sectionStartLine + currentLine - 1;
+                
+                chunks.Add(new CodeChunk(
+                    $"{filePath}:{chunkStartLine}:razor-code-body-{chunkIndex}",
+                    chunkContent.Trim(),
+                    filePath,
+                    chunkStartLine,
+                    chunkEndLine,
+                    "razor-code-body"
+                ));
+                
+                chunkIndex++;
+            }
+            
+            // Calculate overlap for next chunk
+            if (currentLine < lines.Length)
+            {
+                var overlapLines = Math.Min((int)(chunkLines.Count * overlapPercentage), _slidingWindowConfig.MaxOverlapLines);
+                currentLine = Math.Max(startLine + chunkLines.Count - overlapLines, startLine + 1);
+            }
+        }
+        
+        return chunks;
+    }
+    
+    /// <summary>
+    /// Builds context header for Razor method body chunks
+    /// </summary>
+    private string BuildRazorMethodChunkHeader(string methodSignature, string razorComponentName, int chunkIndex, int totalBodyLines)
+    {
+        var header = new System.Text.StringBuilder();
+        header.AppendLine($"// Razor method body chunk {chunkIndex} from: {methodSignature}");
+        header.AppendLine($"// Component: {razorComponentName}");
+        // header.AppendLine($"// Body lines: {totalBodyLines} total");
+        header.AppendLine();
+        return header.ToString();
+    }
+    
+    /// <summary>
+    /// Determines good breaking points for Razor code chunks
+    /// </summary>
+    private static bool IsGoodRazorBreakingPoint(string line)
+    {
+        var trimmed = line.Trim();
+        
+        // Standard C# breaking points
+        if (trimmed.Length == 0 ||                    // Empty line
+            trimmed.StartsWith("//") ||               // Comment
+            trimmed.StartsWith("/*") ||               // Block comment
+            trimmed == "}" ||                         // Closing brace
+            trimmed.StartsWith("if (") ||             // Control flow
+            trimmed.StartsWith("else") ||             
+            trimmed.StartsWith("for (") ||            
+            trimmed.StartsWith("while (") ||          
+            trimmed.StartsWith("foreach (") ||        
+            trimmed.StartsWith("switch (") ||         
+            trimmed.StartsWith("case ") ||            // Switch cases
+            trimmed.StartsWith("try") ||              // Exception handling
+            trimmed.StartsWith("catch") ||            
+            trimmed.StartsWith("finally"))            
+        {
+            return true;
+        }
+        
+        // Razor-specific breaking points
+        return trimmed.StartsWith("[Parameter]") ||    // Blazor parameters
+               trimmed.StartsWith("[Inject]") ||       // Dependency injection
+               trimmed.StartsWith("protected override") ||  // Lifecycle methods
+               trimmed.StartsWith("public override") ||
+               trimmed.StartsWith("private void") ||   // Event handlers
+               trimmed.StartsWith("public void") ||
+               trimmed.StartsWith("private async") ||  // Async methods
+               trimmed.StartsWith("public async");
+    }
+    
+    /// <summary>
+    /// Creates smart chunks for Razor HTML/markup sections
+    /// </summary>
+    private List<CodeChunk> CreateRazorHtmlChunks(string htmlSection, string filePath, int startLine, int endLine)
+    {
+        var chunks = new List<CodeChunk>();
+        
+        // For small HTML sections, create a single chunk
+        if (htmlSection.Length <= _slidingWindowConfig.TargetChunkSize)
+        {
+            var htmlContent = $"<!-- Razor markup in {Path.GetFileName(filePath)} -->\n{htmlSection}";
+            chunks.Add(new CodeChunk(
+                $"{filePath}:{startLine}",
+                htmlContent,
+                filePath,
+                startLine,
+                endLine,
+                "razor-html"
+            ));
+            return chunks;
+        }
+        
+        // For large HTML sections, use sliding window with HTML-aware breaking points
+        var lines = htmlSection.Split('\n');
+        var targetChunkSize = _slidingWindowConfig.TargetChunkSize;
+        var overlapPercentage = _slidingWindowConfig.OverlapPercentage;
+        
+        var currentLine = 0;
+        var chunkIndex = 1;
+        
+        while (currentLine < lines.Length)
+        {
+            var chunkLines = new List<string>();
+            var currentSize = 0;
+            var chunkStartLine = currentLine;
+            
+            // Build context header
+            var contextHeader = $"<!-- Razor HTML chunk {chunkIndex} from: {Path.GetFileName(filePath)} -->\n";
+            var headerSize = contextHeader.Length;
+            var availableSpace = targetChunkSize - headerSize;
+            
+            // Build chunk content with HTML-aware breaking
+            while (currentLine < lines.Length && currentSize < availableSpace)
+            {
+                var line = lines[currentLine];
+                var lineSize = line.Length + 1; // +1 for newline
+                
+                // Check for good HTML breaking points when approaching limit
+                if (currentSize + lineSize > availableSpace && chunkLines.Count > 0)
+                {
+                    if (IsGoodHtmlBreakingPoint(line) || currentSize > availableSpace * 0.8)
+                    {
+                        break;
+                    }
+                }
+                
+                chunkLines.Add(line);
+                currentSize += lineSize;
+                currentLine++;
+            }
+            
+            // Create chunk if we have content
+            if (chunkLines.Count > 0)
+            {
+                var chunkContent = contextHeader + string.Join("\n", chunkLines);
+                var chunkStartLineNumber = startLine + chunkStartLine;
+                var chunkEndLineNumber = startLine + currentLine - 1;
+                
+                chunks.Add(new CodeChunk(
+                    $"{filePath}:{chunkStartLineNumber}:html-{chunkIndex}",
+                    chunkContent.Trim(),
+                    filePath,
+                    chunkStartLineNumber,
+                    chunkEndLineNumber,
+                    "razor-html"
+                ));
+                
+                chunkIndex++;
+            }
+            
+            // Calculate overlap for next chunk
+            if (currentLine < lines.Length)
+            {
+                var overlapLines = Math.Min((int)(chunkLines.Count * overlapPercentage), _slidingWindowConfig.MaxOverlapLines);
+                currentLine = Math.Max(chunkStartLine + chunkLines.Count - overlapLines, chunkStartLine + 1);
+            }
+        }
+        
+        return chunks;
+    }
+    
+    /// <summary>
+    /// Determines good breaking points for HTML/Razor markup chunks
+    /// </summary>
+    private static bool IsGoodHtmlBreakingPoint(string line)
+    {
+        var trimmed = line.Trim();
+        
+        // Empty lines are always good breaking points
+        if (trimmed.Length == 0)
+            return true;
+        
+        // HTML comments
+        if (trimmed.StartsWith("<!--") || trimmed.StartsWith("@*"))
+            return true;
+        
+        // Block-level HTML elements (opening and closing tags)
+        var blockElements = new[] {
+            "<div", "</div>", "<section", "</section>", "<article", "</article>",
+            "<header", "</header>", "<footer", "</footer>", "<main", "</main>",
+            "<nav", "</nav>", "<aside", "</aside>", "<form", "</form>",
+            "<table", "</table>", "<thead", "</thead>", "<tbody", "</tbody>",
+            "<tr", "</tr>", "<fieldset", "</fieldset>", "<ul", "</ul>", "<ol", "</ol>",
+            "<li", "</li>", "<h1", "<h2", "<h3", "<h4", "<h5", "<h6",
+            "</h1>", "</h2>", "</h3>", "</h4>", "</h5>", "</h6>"
+        };
+        
+        foreach (var element in blockElements)
+        {
+            if (trimmed.StartsWith(element, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        
+        // Razor directives and control structures
+        if (trimmed.StartsWith("@if") || trimmed.StartsWith("@else") ||
+            trimmed.StartsWith("@for") || trimmed.StartsWith("@foreach") ||
+            trimmed.StartsWith("@while") || trimmed.StartsWith("@switch") ||
+            trimmed.StartsWith("@using") || trimmed.StartsWith("@{") ||
+            trimmed == "}" || trimmed.StartsWith("@code") ||
+            trimmed.StartsWith("@functions"))
+        {
+            return true;
+        }
+        
+        // Blazor components (both opening and closing)
+        if (trimmed.StartsWith("<") && (
+            char.IsUpper(trimmed[1]) || // Component starts with capital letter
+            trimmed.StartsWith("</") && trimmed.Length > 2 && char.IsUpper(trimmed[2])
+        ))
+        {
+            return true;
+        }
+        
+        return false;
     }
 }
