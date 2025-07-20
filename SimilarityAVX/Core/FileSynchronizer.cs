@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Tasks;
 using CSharpMcpServer.Models;
+using CSharpMcpServer.Utils;
 
 namespace CSharpMcpServer.Core;
 
@@ -18,14 +19,7 @@ public class FileSynchronizer
     // In-memory cache for file hashes - project -> (filepath -> hash)
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _memoryCache = new();
     
-    private static readonly string[] IgnorePatterns = 
-    {
-        "bin/", "obj/", ".vs/", "packages/", "TestResults/",
-        "*.dll", "*.exe", "*.pdb", "*.cache", "*.user",
-        ".git/", "node_modules/", "dist/", "build/",
-        "*.min.js", "*.min.css", "_ReSharper*/", "*.suo",
-        "Migrations/"
-    };
+    // Ignore patterns moved to shared utility class
     
     public FileSynchronizer(int maxDegreeOfParallelism = 16)
     {
@@ -229,47 +223,7 @@ public class FileSynchronizer
     
     private bool ShouldIgnore(string filePath, string baseDirectory)
     {
-        // Normalize paths
-        var relativePath = Path.GetRelativePath(baseDirectory, filePath).Replace('\\', '/');
-        var normalizedPath = filePath.Replace('\\', '/');
-        
-        foreach (var pattern in IgnorePatterns)
-        {
-            if (pattern.EndsWith('/'))
-            {
-                // Directory pattern
-                var dirPattern = pattern.TrimEnd('/');
-                if (relativePath.Contains('/' + dirPattern + '/') || 
-                    relativePath.StartsWith(dirPattern + '/'))
-                    return true;
-            }
-            else if (pattern.StartsWith('*'))
-            {
-                // Extension pattern
-                if (filePath.EndsWith(pattern.Substring(1), StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
-            else
-            {
-                // File pattern
-                if (normalizedPath.Contains(pattern))
-                    return true;
-            }
-        }
-        
-        // Also ignore very large files
-        try
-        {
-            var fileInfo = new FileInfo(filePath);
-            if (fileInfo.Length > 1024 * 1024) // > 1MB
-            {
-                Console.Error.WriteLine($"[FileSynchronizer] Ignoring large file: {filePath} ({fileInfo.Length / 1024}KB)");
-                return true;
-            }
-        }
-        catch { }
-        
-        return false;
+        return IgnorePatterns.ShouldIgnore(filePath, baseDirectory);
     }
     
     private Dictionary<string, string> GetFileHashesIncremental(string directory, HashSet<string> filesToCheck, ConcurrentDictionary<string, string> cache)

@@ -7,6 +7,7 @@ using CSharpMcpServer.Models;
 using CSharpMcpServer.Embedding;
 using CSharpMcpServer.Storage;
 using CSharpMcpServer.Cache;
+using CSharpMcpServer.Utils;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
@@ -450,15 +451,7 @@ public class CodeIndexer : IDisposable
     
     private bool ShouldIgnore(string filePath, string baseDirectory)
     {
-        var relativePath = Path.GetRelativePath(baseDirectory, filePath).Replace('\\', '/');
-        
-        var ignorePatterns = new[] 
-        { 
-            "bin/", "obj/", ".vs/", "packages/", "TestResults/",
-            "node_modules/", ".git/", "dist/", "build/"
-        };
-        
-        return ignorePatterns.Any(pattern => relativePath.Contains(pattern));
+        return IgnorePatterns.ShouldIgnore(filePath, baseDirectory);
     }
     
     private dynamic GetParser(string filePath)
