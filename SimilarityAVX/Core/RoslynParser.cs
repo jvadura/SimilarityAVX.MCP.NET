@@ -138,10 +138,10 @@ public class RoslynParser
                     "generated"
                 ));
             }
-            // If no structural elements found, use intelligent sliding window chunking
+            // If no structural elements found, use three-tier chunking
             else if (!chunks.Any())
             {
-                chunks.AddRange(ChunkFileWithSlidingWindow(code, filePath));
+                chunks.AddRange(ChunkUnstructuredFileWithTiers(code, filePath));
             }
             
             // Deduplicate and validate chunk sizes
@@ -1219,7 +1219,7 @@ public class RoslynParser
     }
     
     /// <summary>
-    /// Extract top-level statements from Program.cs style files
+    /// Extract top-level statements from Program.cs style files with three-tier chunking
     /// </summary>
     private List<CodeChunk> ExtractTopLevelStatements(SyntaxNode root, string filePath)
     {
@@ -1230,35 +1230,259 @@ public class RoslynParser
             
         if (!globalStatements.Any()) return chunks;
         
-        // Group consecutive statements into logical chunks
-        var currentChunk = new List<GlobalStatementSyntax>();
+        // Group consecutive statements into logical chunks (Tier 1)
+        var statementGroups = new List<List<GlobalStatementSyntax>>();
+        var currentGroup = new List<GlobalStatementSyntax>();
         var lastLine = -1;
         
         foreach (var statement in globalStatements)
         {
             var startLine = statement.GetLocation().GetLineSpan().StartLinePosition.Line;
             
-            // If there's a gap of more than 2 lines, start a new chunk
+            // If there's a gap of more than 2 lines, start a new group
             if (lastLine != -1 && startLine - lastLine > 2)
             {
-                if (currentChunk.Any())
+                if (currentGroup.Any())
                 {
-                    chunks.Add(CreateTopLevelChunk(currentChunk, filePath));
-                    currentChunk = new List<GlobalStatementSyntax>();
+                    statementGroups.Add(currentGroup);
+                    currentGroup = new List<GlobalStatementSyntax>();
                 }
             }
             
-            currentChunk.Add(statement);
+            currentGroup.Add(statement);
             lastLine = statement.GetLocation().GetLineSpan().EndLinePosition.Line;
         }
         
-        // Add the last chunk
-        if (currentChunk.Any())
+        // Add the last group
+        if (currentGroup.Any())
         {
-            chunks.Add(CreateTopLevelChunk(currentChunk, filePath));
+            statementGroups.Add(currentGroup);
+        }
+        
+        // Process each statement group with three-tier chunking
+        foreach (var group in statementGroups)
+        {
+            chunks.AddRange(CreateTopLevelStatementChunksWithTiers(group, filePath));
         }
         
         return chunks;
+    }
+    
+    /// <summary>
+    /// Creates three-tier chunks for a group of top-level statements
+    /// </summary>
+    private List<CodeChunk> CreateTopLevelStatementChunksWithTiers(List<GlobalStatementSyntax> statements, string filePath)
+    {
+        var chunks = new List<CodeChunk>();
+        
+        if (!statements.Any()) return chunks;
+        
+        // Get the complete content of this statement group
+        var groupContent = string.Join("\n", statements.Select(s => s.ToString()));
+        var firstStatement = statements.First();
+        var lastStatement = statements.Last();
+        
+        var startLine = firstStatement.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var endLine = lastStatement.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
+        
+        // Tier 1: Complete statement group context (always created)
+        var contextualContent = $"// Top-level program statements\n{groupContent}";
+        if (_includeFilePath)
+        {
+            var contextPrefix = BuildContextPrefix(filePath);
+            contextualContent = $"{contextPrefix}\n{contextualContent}";
+        }
+        
+        // Smart truncation if the group is too large for embedding model
+        if (contextualContent.Length > MaxChunkSize)
+        {
+            contextualContent = SmartTruncateTopLevelStatements(contextualContent, MaxChunkSize, filePath, startLine);
+        }
+        
+        chunks.Add(new CodeChunk(
+            $"{filePath}:{startLine}",
+            contextualContent.Trim(),
+            filePath,
+            startLine,
+            endLine,
+            "top_level_statements"
+        ));
+        
+        // If the group is small, only return the complete context
+        if (groupContent.Length <= _slidingWindowConfig.TargetChunkSize)
+        {
+            return chunks;
+        }
+        
+        // Tier 2: Standard sliding window chunks (~10KB) for large statement groups
+        chunks.AddRange(CreateTopLevelStatementSlidingChunks(
+            groupContent, filePath, startLine, 
+            _slidingWindowConfig.TargetChunkSize, "top_level_statements_body"));
+        
+        // Tier 3: Ultra-granular chunks (~2KB) for very large statement groups
+        if (groupContent.Length > _slidingWindowConfig.UltraGranularChunkSize * 2)
+        {
+            chunks.AddRange(CreateTopLevelStatementSlidingChunks(
+                groupContent, filePath, startLine,
+                _slidingWindowConfig.UltraGranularChunkSize, "top_level_statements_ultra"));
+        }
+        
+        return chunks;
+    }
+    
+    /// <summary>
+    /// Creates sliding window chunks for top-level statements
+    /// </summary>
+    private List<CodeChunk> CreateTopLevelStatementSlidingChunks(string content, string filePath, int baseStartLine, int targetChunkSize, string chunkType)
+    {
+        var chunks = new List<CodeChunk>();
+        var lines = content.Split('\n');
+        
+        if (lines.Length == 0) return chunks;
+        
+        var currentLine = 0;
+        var chunkNumber = 1;
+        
+        while (currentLine < lines.Length)
+        {
+            var chunkLines = new List<string>();
+            var currentSize = 0;
+            var chunkStartLine = currentLine;
+            
+            // Build chunk respecting intelligent boundaries
+            while (currentLine < lines.Length && currentSize < targetChunkSize)
+            {
+                var line = lines[currentLine];
+                var lineSize = line.Length + 1; // +1 for newline
+                
+                // If adding this line would exceed target, check for good breaking point
+                if (currentSize + lineSize > targetChunkSize && chunkLines.Count > 0)
+                {
+                    // For ultra-granular chunks, use more permissive breaking
+                    var isUltraChunk = chunkType == "top_level_statements_ultra";
+                    var breakingPoint = isUltraChunk ? IsUltraGranularBreakingPoint(line) : IsGoodTopLevelBreakingPoint(line);
+                    
+                    if (breakingPoint || currentSize > targetChunkSize * 0.5)
+                    {
+                        break;
+                    }
+                }
+                
+                chunkLines.Add(line);
+                currentSize += lineSize;
+                currentLine++;
+            }
+            
+            // Create chunk with content
+            if (chunkLines.Count > 0)
+            {
+                var chunkContent = string.Join("\n", chunkLines);
+                var contextualContent = $"// Top-level program statements\n{chunkContent}";
+                
+                if (_includeFilePath)
+                {
+                    var contextPrefix = BuildContextPrefix(filePath);
+                    contextualContent = $"{contextPrefix}\n{contextualContent}";
+                }
+                
+                // Add chunk metadata
+                var metadataPrefix = chunkType == "top_level_statements_ultra" 
+                    ? $"// Ultra-granular top-level chunk {chunkNumber} from: {Path.GetFileName(filePath)}"
+                    : $"// Top-level chunk {chunkNumber} from: {Path.GetFileName(filePath)}";
+                    
+                contextualContent = $"{metadataPrefix}\n{contextualContent}";
+                
+                var actualStartLine = baseStartLine + chunkStartLine;
+                var actualEndLine = baseStartLine + chunkStartLine + chunkLines.Count - 1;
+                
+                chunks.Add(new CodeChunk(
+                    $"{filePath}:{actualStartLine}",
+                    contextualContent,
+                    filePath,
+                    actualStartLine,
+                    actualEndLine,
+                    chunkType
+                ));
+                
+                chunkNumber++;
+            }
+            
+            // Calculate overlap for next chunk using configuration
+            if (currentLine < lines.Length)
+            {
+                var overlapLines = Math.Min((int)(chunkLines.Count * _slidingWindowConfig.OverlapPercentage), _slidingWindowConfig.MaxOverlapLines);
+                currentLine = Math.Max(chunkStartLine + chunkLines.Count - overlapLines, chunkStartLine + 1);
+            }
+        }
+        
+        return chunks;
+    }
+    
+    /// <summary>
+    /// Smart truncation for top-level statements preserving beginning and structure
+    /// </summary>
+    private string SmartTruncateTopLevelStatements(string content, int maxSize, string filePath, int startLine)
+    {
+        if (content.Length <= maxSize) return content;
+        
+        var lines = content.Split('\n');
+        var truncatedLines = new List<string>();
+        var currentSize = 0;
+        
+        // Always include header
+        var headerComment = $"// Complete top-level statements: {Path.GetFileName(filePath)} line {startLine} (truncated at {maxSize} chars)";
+        truncatedLines.Add(headerComment);
+        currentSize += headerComment.Length + 1;
+        
+        // Add as many lines as possible from the beginning
+        foreach (var line in lines)
+        {
+            var lineSize = line.Length + 1;
+            if (currentSize + lineSize > maxSize * 0.95) // Leave 5% buffer
+                break;
+                
+            truncatedLines.Add(line);
+            currentSize += lineSize;
+        }
+        
+        // Add truncation notice
+        if (truncatedLines.Count < lines.Length)
+        {
+            truncatedLines.Add($"// ... (truncated {lines.Length - truncatedLines.Count + 1} lines)");
+        }
+        
+        return string.Join("\n", truncatedLines);
+    }
+    
+    /// <summary>
+    /// Determines good breaking points specifically for top-level statements
+    /// </summary>
+    private static bool IsGoodTopLevelBreakingPoint(string line)
+    {
+        var trimmed = line.Trim();
+        
+        // Good breaking points for top-level statements
+        return trimmed.Length == 0 || // Empty line
+               trimmed.StartsWith("//") || // Comment
+               trimmed.StartsWith("/*") ||
+               trimmed.StartsWith("using ") || // Using statement
+               trimmed.StartsWith("var ") || // Variable declaration
+               trimmed.StartsWith("const ") ||
+               trimmed.StartsWith("static ") ||
+               trimmed.EndsWith(";") || // Statement ending
+               trimmed.EndsWith("{") || // Block start
+               trimmed.StartsWith("}") || // Block end
+               trimmed.StartsWith("if ") || // Control flow
+               trimmed.StartsWith("for ") ||
+               trimmed.StartsWith("foreach ") ||
+               trimmed.StartsWith("while ") ||
+               trimmed.StartsWith("switch ") ||
+               trimmed.StartsWith("try ") ||
+               trimmed.StartsWith("catch ") ||
+               trimmed.StartsWith("finally ") ||
+               trimmed.Contains("builder.") || // Builder pattern (common in Program.cs)
+               trimmed.Contains("app.") || // App configuration (common in Program.cs)
+               trimmed.Contains("services."); // Service registration (common in Program.cs)
     }
     
     private CodeChunk CreateTopLevelChunk(List<GlobalStatementSyntax> statements, string filePath)
@@ -1291,7 +1515,52 @@ public class RoslynParser
     }
     
     /// <summary>
-    /// Intelligent sliding window chunking for files with no clear structure
+    /// Three-tier chunking for unstructured files: Complete context + Standard granular + Ultra-granular
+    /// </summary>
+    private List<CodeChunk> ChunkUnstructuredFileWithTiers(string code, string filePath)
+    {
+        var chunks = new List<CodeChunk>();
+        var lines = code.Split('\n');
+        
+        if (lines.Length == 0) return chunks;
+        
+        // Tier 1: Always create complete file context chunk
+        var contextContent = AddFilePathContext(code, filePath);
+        if (contextContent.Length > MaxChunkSize)
+        {
+            // Smart truncate if too large for embedding model
+            contextContent = SmartTruncateContent(contextContent, MaxChunkSize, filePath);
+        }
+        
+        chunks.Add(new CodeChunk(
+            $"{filePath}:1",
+            contextContent,
+            filePath,
+            1,
+            lines.Length,
+            "file"
+        ));
+        
+        // If file is small, only return complete context
+        if (code.Length <= _slidingWindowConfig.TargetChunkSize)
+        {
+            return chunks;
+        }
+        
+        // Tier 2: Standard sliding window chunks (~10KB)
+        chunks.AddRange(CreateSlidingWindowChunks(code, filePath, _slidingWindowConfig.TargetChunkSize, "sliding_window"));
+        
+        // Tier 3: Ultra-granular chunks (~2KB) for large files
+        if (code.Length > _slidingWindowConfig.UltraGranularChunkSize * 2)
+        {
+            chunks.AddRange(CreateSlidingWindowChunks(code, filePath, _slidingWindowConfig.UltraGranularChunkSize, "sliding_window_ultra"));
+        }
+        
+        return chunks;
+    }
+    
+    /// <summary>
+    /// Legacy method: Intelligent sliding window chunking for files with no clear structure
     /// </summary>
     private List<CodeChunk> ChunkFileWithSlidingWindow(string code, string filePath)
     {
@@ -1382,6 +1651,122 @@ public class RoslynParser
         
         return chunks;
     }
+    
+    /// <summary>
+    /// Creates sliding window chunks with specified target size
+    /// </summary>
+    private List<CodeChunk> CreateSlidingWindowChunks(string code, string filePath, int targetChunkSize, string chunkType)
+    {
+        var chunks = new List<CodeChunk>();
+        var lines = code.Split('\n');
+        
+        if (lines.Length == 0) return chunks;
+        
+        var currentLine = 0;
+        var chunkNumber = 1;
+        
+        while (currentLine < lines.Length)
+        {
+            var chunkLines = new List<string>();
+            var currentSize = 0;
+            var startLine = currentLine;
+            
+            // Build chunk respecting intelligent boundaries
+            while (currentLine < lines.Length && currentSize < targetChunkSize)
+            {
+                var line = lines[currentLine];
+                var lineSize = line.Length + 1; // +1 for newline
+                
+                // If adding this line would exceed target, check for good breaking point
+                if (currentSize + lineSize > targetChunkSize && chunkLines.Count > 0)
+                {
+                    // For ultra-granular chunks, use more permissive breaking
+                    var isUltraChunk = chunkType == "sliding_window_ultra";
+                    var breakingPoint = isUltraChunk ? IsUltraGranularBreakingPoint(line) : IsGoodBreakingPoint(line);
+                    
+                    if (breakingPoint || currentSize > targetChunkSize * 0.5)
+                    {
+                        break;
+                    }
+                }
+                
+                chunkLines.Add(line);
+                currentSize += lineSize;
+                currentLine++;
+            }
+            
+            // Create chunk with content
+            if (chunkLines.Count > 0)
+            {
+                var chunkContent = string.Join("\n", chunkLines);
+                var contextualContent = AddFilePathContext(chunkContent, filePath);
+                
+                // Add chunk metadata
+                var metadataPrefix = chunkType == "sliding_window_ultra" 
+                    ? $"// Ultra-granular chunk {chunkNumber} from: {Path.GetFileName(filePath)}"
+                    : $"// Chunk {chunkNumber} from: {Path.GetFileName(filePath)}";
+                    
+                contextualContent = $"{metadataPrefix}\n{contextualContent}";
+                
+                chunks.Add(new CodeChunk(
+                    $"{filePath}:{startLine + 1}",
+                    contextualContent,
+                    filePath,
+                    startLine + 1,
+                    startLine + chunkLines.Count,
+                    chunkType
+                ));
+                
+                chunkNumber++;
+            }
+            
+            // Calculate overlap for next chunk using configuration
+            if (currentLine < lines.Length)
+            {
+                var overlapLines = Math.Min((int)(chunkLines.Count * _slidingWindowConfig.OverlapPercentage), _slidingWindowConfig.MaxOverlapLines);
+                currentLine = Math.Max(startLine + chunkLines.Count - overlapLines, startLine + 1);
+            }
+        }
+        
+        return chunks;
+    }
+    
+    /// <summary>
+    /// Smart content truncation preserving beginning and structure
+    /// </summary>
+    private string SmartTruncateContent(string content, int maxSize, string filePath)
+    {
+        if (content.Length <= maxSize) return content;
+        
+        var lines = content.Split('\n');
+        var truncatedLines = new List<string>();
+        var currentSize = 0;
+        
+        // Always include file header/context
+        var headerComment = $"// Complete file: {Path.GetFileName(filePath)} (truncated at {maxSize} chars)";
+        truncatedLines.Add(headerComment);
+        currentSize += headerComment.Length + 1;
+        
+        // Add as many lines as possible from the beginning
+        foreach (var line in lines)
+        {
+            var lineSize = line.Length + 1;
+            if (currentSize + lineSize > maxSize * 0.95) // Leave 5% buffer
+                break;
+                
+            truncatedLines.Add(line);
+            currentSize += lineSize;
+        }
+        
+        // Add truncation notice
+        if (truncatedLines.Count < lines.Length)
+        {
+            truncatedLines.Add($"// ... (truncated {lines.Length - truncatedLines.Count + 1} lines)");
+        }
+        
+        return string.Join("\n", truncatedLines);
+    }
+    
     
     /// <summary>
     /// Determines if a line is a good place to break a chunk
