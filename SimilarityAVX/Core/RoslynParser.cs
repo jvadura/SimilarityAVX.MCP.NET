@@ -1053,7 +1053,9 @@ public class RoslynParser
         var fileName = Path.GetFileName(filePath).ToLowerInvariant();
         
         // Check file name patterns
-        if (fileName.EndsWith(".generated.cs") ||
+        if (fileName.EndsWith("Reference.cs") ||
+            fileName.EndsWith("ModelSnapshot.cs") ||
+            //fileName.EndsWith(".generated.cs") ||
             fileName.EndsWith(".designer.cs") ||
             fileName.EndsWith(".g.cs") ||
             fileName.EndsWith(".g.i.cs") ||
