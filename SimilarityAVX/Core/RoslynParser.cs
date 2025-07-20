@@ -393,14 +393,7 @@ public class RoslynParser
         
         parts.Add($"// In {typeKind} {containingType.Identifier}");
         
-        // Add XML documentation
-        var xmlDocs = GetXmlDocumentation(method);
-        if (!string.IsNullOrWhiteSpace(xmlDocs))
-        {
-            parts.Add(xmlDocs.Trim());
-        }
-        
-        // Add the full method
+        // Add the full method (includes XML documentation as leading trivia)
         var methodStr = method.ToFullString().Trim();
         
         // If method is too large, do smart truncation preserving beginning
