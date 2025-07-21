@@ -706,14 +706,14 @@ namespace CSharpMcpServer.Core
         }
 
         /// <summary>
-        /// Create multiple chunks for a large C function (similar to Roslyn parser approach)
+        /// Create multiple chunks for a large C function (three-tier chunking approach)
         /// </summary>
         private List<CodeChunk> CreateFunctionChunks(string functionContent, string functionName, string filePath, int startLine, int endLine)
         {
             var chunks = new List<CodeChunk>();
             var chunkType = DetermineChunkType("c-function", functionName);
             
-            // Always create primary function chunk (complete function with smart truncation if needed)
+            // Tier 1: Always create primary function chunk (complete function with smart truncation if needed)
             var primaryChunk = functionContent.Length > _maxChunkSize 
                 ? SmartTruncateFunction(functionContent, functionName)
                 : functionContent;
@@ -726,11 +726,18 @@ namespace CSharpMcpServer.Core
                 endLine,
                 chunkType));
             
-            // For large functions, also create sliding window chunks of the function body
+            // Tier 2: For large functions, create sliding window chunks of the function body (~10KB)
             if (functionContent.Length > _slidingWindowConfig.TargetChunkSize)
             {
                 var bodyChunks = CreateFunctionBodyChunks(functionContent, functionName, filePath, startLine);
                 chunks.AddRange(bodyChunks);
+            }
+            
+            // Tier 3: For very large functions, create ultra-granular chunks (~2KB)
+            if (functionContent.Length > _slidingWindowConfig.UltraGranularChunkSize * 2)
+            {
+                var ultraChunks = CreateUltraGranularFunctionChunks(functionContent, functionName, filePath, startLine);
+                chunks.AddRange(ultraChunks);
             }
             
             return chunks;
@@ -884,6 +891,134 @@ namespace CSharpMcpServer.Core
             
             // Preprocessor directives
             if (trimmed.StartsWith("#"))
+                return true;
+            
+            return false;
+        }
+
+        /// <summary>
+        /// Create ultra-granular chunks for very large C functions (~2KB chunks for precision search)
+        /// </summary>
+        private List<CodeChunk> CreateUltraGranularFunctionChunks(string functionContent, string functionName, string filePath, int startLine)
+        {
+            var chunks = new List<CodeChunk>();
+            var lines = functionContent.Split('\n');
+            var targetSize = _slidingWindowConfig.UltraGranularChunkSize; // Default: 2000 chars
+            var overlapPercentage = _slidingWindowConfig.OverlapPercentage; // 15%
+            
+            // Find function body start (after opening brace)
+            int bodyStartLine = 0;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                if (lines[i].Contains("{"))
+                {
+                    bodyStartLine = i + 1;
+                    break;
+                }
+            }
+            
+            if (bodyStartLine >= lines.Length - 1) return chunks; // No meaningful body
+            
+            // Create ultra-granular overlapping chunks of the function body
+            var bodyLines = lines.Skip(bodyStartLine).ToArray();
+            int currentLine = bodyStartLine;
+            int chunkIndex = 1;
+            
+            while (currentLine < bodyLines.Length)
+            {
+                var chunkLines = new List<string>();
+                var currentSize = 0;
+                var startLineInChunk = currentLine;
+                
+                // Reserve space for ultra-granular context header (~80 chars)
+                var headerReserve = 100;
+                
+                // Add lines until we reach target size or end of function
+                while (currentLine < bodyLines.Length && currentSize < targetSize - headerReserve)
+                {
+                    var line = bodyLines[currentLine - bodyStartLine];
+                    chunkLines.Add(line);
+                    currentSize += line.Length + 1; // +1 for newline
+                    currentLine++;
+                    
+                    // Stop at natural breaking points for better ultra-granular chunking
+                    if (currentSize > (targetSize - headerReserve) * 0.7 && IsUltraGranularFunctionBreakingPoint(line))
+                    {
+                        break;
+                    }
+                }
+                
+                if (chunkLines.Count == 0) break;
+                
+                // Create minimal context header for ultra-granular chunk
+                var contextHeader = BuildUltraGranularFunctionHeader(functionName, chunkIndex, startLineInChunk + startLine);
+                var chunkContent = contextHeader + "\n" + string.Join("\n", chunkLines);
+                
+                chunks.Add(new CodeChunk(
+                    $"{filePath}:{startLineInChunk + startLine}",
+                    chunkContent,
+                    _includeFilePath ? filePath : Path.GetFileName(filePath),
+                    startLineInChunk + startLine,
+                    currentLine + startLine - 1,
+                    "c-function-ultra"));
+                
+                // Calculate overlap for next chunk
+                var overlapLines = Math.Min(
+                    (int)(chunkLines.Count * overlapPercentage), 
+                    _slidingWindowConfig.MaxOverlapLines);
+                currentLine = Math.Max(startLineInChunk + 1, currentLine - overlapLines);
+                
+                // Prevent infinite loops
+                if (currentLine <= startLineInChunk)
+                {
+                    currentLine = startLineInChunk + Math.Max(1, chunkLines.Count / 2);
+                }
+                
+                chunkIndex++;
+            }
+            
+            return chunks;
+        }
+
+        /// <summary>
+        /// Build minimal context header for ultra-granular C function chunks
+        /// </summary>
+        private string BuildUltraGranularFunctionHeader(string functionName, int chunkIndex, int startLine)
+        {
+            return $"// C function ultra chunk {chunkIndex} from: {functionName}";
+        }
+
+        /// <summary>
+        /// Identify ultra-granular breaking points in C function bodies (more permissive for 2KB chunks)
+        /// </summary>
+        private bool IsUltraGranularFunctionBreakingPoint(string line)
+        {
+            var trimmed = line.Trim();
+            
+            // All standard breaking points from tier 2
+            if (IsGoodFunctionBreakingPoint(line))
+                return true;
+            
+            // Additional ultra-permissive breaking points for 2KB chunks
+            
+            // Statement endings
+            if (trimmed.EndsWith(";"))
+                return true;
+            
+            // Assignment operations
+            if (trimmed.Contains(" = ") || trimmed.Contains("++") || trimmed.Contains("--"))
+                return true;
+            
+            // Function/method calls
+            if (trimmed.Contains("(") && trimmed.Contains(")"))
+                return true;
+            
+            // Array operations
+            if (trimmed.Contains("[") && trimmed.Contains("]"))
+                return true;
+            
+            // Pointer operations
+            if (trimmed.Contains("->") || trimmed.Contains("*") || trimmed.Contains("&"))
                 return true;
             
             return false;

@@ -6,7 +6,7 @@
     "model": "voyage-code-3",
     "dimension": 2048,
     "precision": "Float32",
-    "batchSize": 100,
+    "batchSize": 50,
     "maxRetries": 6,
     "retryDelayMs": 1000
   },

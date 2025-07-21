@@ -1708,6 +1708,7 @@ public static class MultiProjectCodeSearchTools
         sb.AppendLine("### C Code Structures");
         sb.AppendLine("- `c-function` - C function implementations");
         sb.AppendLine("- `c-function-body` - Large C function body chunks (10KB+ functions)");
+        sb.AppendLine("- `c-function-ultra` - Ultra-granular C function chunks (4KB+ functions, 2KB chunks)");
         sb.AppendLine("- `c-struct` - C struct definitions");
         sb.AppendLine("- `c-enum` - C enum definitions");
         sb.AppendLine("- `c-typedef` - C typedef declarations");

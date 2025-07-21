@@ -193,10 +193,10 @@ public class CodeIndexer : IDisposable
             var chunksToStore = new List<(string id, string path, int start, int end, string content, byte[] embedding, VectorPrecision precision, string chunkType)>();
             
             // Dynamic batching to respect token limits
-            const int maxTokensPerBatch = 120000;
+            const int maxTokensPerBatch = 100000; // Reduced from 120K for VoyageAI compatibility
             const int avgCharsPerToken = 3; // More conservative estimate for code (lots of symbols)
             const double safetyMargin = 0.8; // Use only 80% of limit for safety
-            const int maxCharsPerBatch = (int)(maxTokensPerBatch * avgCharsPerToken * safetyMargin); // ~288,000 chars
+            const int maxCharsPerBatch = (int)(maxTokensPerBatch * avgCharsPerToken * safetyMargin); // ~240,000 chars
             
             int i = 0;
             while (i < allChunks.Count)
