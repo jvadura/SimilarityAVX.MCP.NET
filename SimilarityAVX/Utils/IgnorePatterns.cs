@@ -26,7 +26,10 @@ public static class IgnorePatterns
         "*.min.js", "*.min.css", "_ReSharper*/", "*.suo",
         
         // Database migrations (auto-generated)
-        "Migrations/"
+        "Migrations/",
+        
+        // Auto-generated service references (WCF/SOAP proxies)
+        "Connected Services/"
     };
     
     /// <summary>
